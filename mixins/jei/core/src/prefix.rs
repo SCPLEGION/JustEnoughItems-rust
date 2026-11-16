@@ -45,6 +45,15 @@ pub const PREFIXES: [PrefixInfo; 7] = [
     PrefixInfo { index: SearchIndex::Identifiers, id: "identifiers", prefix: '&', supports_dynamic_completion: true, description_key: "jei.search.completion.prefix.identifier" },
 ];
 
+/// JEI's default `SearchMode` of each index (`IngredientFilterConfig`).
+pub fn default_mode(index: SearchIndex) -> SearchMode {
+    match index {
+        SearchIndex::NamesAndAliases | SearchIndex::Tooltips => SearchMode::Enabled,
+        SearchIndex::ModNames | SearchIndex::Tags => SearchMode::RequireManualPrefix,
+        SearchIndex::Colors | SearchIndex::Identifiers | SearchIndex::CreativeTabs => SearchMode::Disabled,
+    }
+}
+
 pub fn no_prefix() -> &'static PrefixInfo {
     &PREFIXES[0]
 }

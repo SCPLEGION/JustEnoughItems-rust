@@ -4,4 +4,5 @@ pub mod ingredient;
 pub mod prefix;
 pub mod recipes;
 pub mod search;
+pub mod view;
 pub mod tokenizer;
