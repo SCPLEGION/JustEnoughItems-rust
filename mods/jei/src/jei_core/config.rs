@@ -48,6 +48,8 @@ pub const OPTIONS: &[Opt] = &[
     i("input", "smoothScrollRate", 9, 1, 50),
     b("input", "recipeSlotCyclingEnabled", true),
     b("recipes", "showTagRecipesEnabled", true),
+    i("recipes", "recipeGuiHeight", 350, 175, i32::MAX as i64),
+    i("recipes", "recipeGuiWidth", 198, 198, i32::MAX as i64),
     i("recipes", "maxRecipeGuiColumns", 2, 1, 10),
     e("recipes", "navigationMode", "PAGED", &["PAGED", "SCROLLED"]),
     b("recipes", "recipeSortingBookmarks", true),
