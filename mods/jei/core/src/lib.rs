@@ -4,6 +4,7 @@ pub mod completion;
 pub mod config;
 pub mod grid;
 pub mod highlight;
+pub mod keys;
 pub mod history;
 pub mod ingredient;
 pub mod plugin;
