@@ -6,6 +6,8 @@ use super::native_hooks::{NativeCreativeStack, NativeRecipeKind, NativeRecipes};
 use super::Game;
 use horizon_client::hud::HudBatch;
 use jei_core::bookmarks::BookmarkList;
+use jei_core::highlight;
+use jei_core::history::LookupHistory;
 use jei_core::grid::{self, GridConfig, Rect};
 use jei_core::plugin::{split_ingredient, CategoryDef, CustomRecipe, PluginError, Registry};
 use jei_core::view::{input as slot_input, output as slot_output, Layout};
@@ -100,6 +102,9 @@ struct State {
     /// Hide ingredients mode (`editModeEnabled`, per session) and whether Ctrl is held.
     edit: bool,
     ctrl: bool,
+    /// `LookupHistory`: the ingredients looked up, saved when it changes.
+    lookups: LookupHistory,
+    lookups_dirty: bool,
     /// Hidden ingredients (`EditModeConfig`): an ingredient string, or `*` and an item id for all its variants.
     hidden: Vec<String>,
     dirty: bool,
@@ -142,6 +147,8 @@ impl State {
             anvil_done: false,
             edit: false,
             ctrl: false,
+            lookups: LookupHistory::default(),
+            lookups_dirty: false,
             hidden: Vec::new(),
             dirty: false,
             screen: (0, 0),
@@ -449,6 +456,7 @@ fn refilter(state: &mut State) {
 pub(super) fn tick(game: &mut Game<'_>) {
     if STATE.with_borrow(|s| !s.settings_loaded) {
         let marks = game.native_setting("jei", "bookmarks").unwrap_or_default();
+        let lookups = game.native_setting("jei", "lookup_history").unwrap_or_default();
         let hidden: Vec<String> = game.native_setting("jei", "hidden").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
         let cheat = game.native_setting("jei", "cheat_mode").is_some_and(|v| v == "true");
         let saved: Vec<(SearchIndex, SearchMode)> = PREFIXES
@@ -463,6 +471,7 @@ pub(super) fn tick(game: &mut Game<'_>) {
         STATE.with_borrow_mut(|s| {
             s.bookmarks = BookmarkList::load(&marks);
             s.hidden = hidden;
+            s.lookups = LookupHistory::load(&lookups, jei_core::history::DEFAULT_MAX);
             s.cheat = cheat;
             s.modes = saved;
             s.columns = i32::clamp(columns, 2, 100);
@@ -470,6 +479,13 @@ pub(super) fn tick(game: &mut Game<'_>) {
             s.dirty = true;
             s.settings_loaded = true;
         });
+    }
+    if STATE.with_borrow(|s| s.lookups_dirty) {
+        let text = STATE.with_borrow_mut(|s| {
+            s.lookups_dirty = false;
+            s.lookups.save()
+        });
+        game.native_set_setting("jei", "lookup_history", &text);
     }
     if STATE.with_borrow(|s| !s.anvil_done) {
         if let (Some(data), Some(anvil)) = (game.native_recipes(), game.native_anvil_recipes()) {
@@ -506,6 +522,8 @@ fn rect_f(r: Rect) -> [f32; 4] {
 fn open_recipes(state: &mut State, item: &str, role: Role) {
     let item = split_ingredient(item).0;
     let focus = Focus { role, uid: item.to_owned() };
+    state.lookups.add(item);
+    state.lookups_dirty = true;
     let cats: Vec<usize> = state
         .mgr
         .categories(std::slice::from_ref(&focus), false, &|_| true)
@@ -597,7 +615,31 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         game.native_fill(batch, rect_f(search), 0xFF000000);
         game.native_fill(batch, rect_f(Rect::new(search.x + 1, search.y + 1, search.w - 2, search.h - 2)), if s.focused { 0xFF202020 } else { 0xFF101010 });
         let shown = if s.query.is_empty() && !s.focused { "Search...".to_owned() } else if s.focused && (s.started.elapsed().as_millis() / 500) % 2 == 0 { format!("{}_", s.query) } else { s.query.clone() };
-        game.native_text(batch, &shown, [(search.x + 4) as f32, (search.y + 6) as f32], if s.query.is_empty() { 0x909090 } else { TEXT }, false);
+        if s.query.is_empty() {
+            game.native_text(batch, &shown, [(search.x + 4) as f32, (search.y + 6) as f32], 0x909090, false);
+        } else {
+            // `SearchSyntaxHighlighter`: prefixes, operators and content in their colours; red when nothing matches.
+            let prefixes: Vec<char> = PREFIXES.iter().filter(|p| p.prefix != '\0' && s.modes.iter().any(|(k, m)| *k == p.index && *m != SearchMode::Disabled)).map(|p| p.prefix).collect();
+            let colors = highlight::colors(&s.query, s.results.is_empty(), &prefixes);
+            let mut x = (search.x + 4) as f32;
+            let chars: Vec<char> = shown.chars().collect();
+            let mut unit = 0;
+            let mut i = 0;
+            while i < chars.len() {
+                let color = colors.get(unit).copied().unwrap_or(highlight::DEFAULT_CONTENT_COLOR);
+                let mut j = i;
+                let mut u = unit;
+                while j < chars.len() && colors.get(u).copied().unwrap_or(highlight::DEFAULT_CONTENT_COLOR) == color {
+                    u += chars[j].len_utf16();
+                    j += 1;
+                }
+                let seg: String = chars[i..j].iter().collect();
+                game.native_text(batch, &seg, [x, (search.y + 6) as f32], color & 0xFFFFFF, false);
+                x += game.native_text_width(&seg);
+                i = j;
+                unit = u;
+            }
+        }
         // The cheat mode toggle, left of the page arrows.
         let cheat_label = if s.cheat { "Cheat: on" } else { "Cheat: off" };
         s.cheat_button = Rect::new(search.x, search.y - 18, text_w(game, cheat_label) + 8, 14);
