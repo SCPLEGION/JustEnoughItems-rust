@@ -1,7 +1,7 @@
 //! Port of `IngredientListOverlayLayout` and `IngredientGridWithNavigationLayout` (search bar at the bottom, not
 //! centred; slot background style on): where the ingredient grid, its page navigation, its background, the search
 //! field and the config button go.
-use crate::grid::Rect;
+use crate::jei_core::grid::Rect;
 
 pub const BORDER_MARGIN: i32 = 6;
 pub const INNER_PADDING: i32 = 2;

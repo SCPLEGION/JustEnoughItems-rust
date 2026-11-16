@@ -1,6 +1,6 @@
 //! Port of the game-free parts of `ListElementInfo`: the strings an ingredient is searched by (names and aliases, mod
 //! names with ids/aliases/short names, tags, tooltip lines, colour names), built from values the glue reads from the game.
-use crate::prefix::SearchIndex;
+use crate::jei_core::prefix::SearchIndex;
 use std::collections::BTreeSet;
 
 /// The `IIngredientFilterConfig` switches `ListElementInfo` reads.
@@ -227,8 +227,8 @@ impl ListElementInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prefix::SearchMode;
-    use crate::search::ElementSearch;
+    use crate::jei_core::prefix::SearchMode;
+    use crate::jei_core::search::ElementSearch;
 
     fn data(name: &str) -> IngredientData {
         IngredientData {

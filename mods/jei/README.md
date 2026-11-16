@@ -1,8 +1,8 @@
 # JEI on upstream Horizon (horizon-rust/horizon)
 
-A native mod on the official mod API (`horizon-mod.toml`, `src/lib.rs`, `impl mod_api::Hooks`). `core/` is a copy of
-`mixins/jei/core` (a native mod may not reach outside its folder); the old fork bundle in `mixins/jei` stays until this
-one has everything.
+A native mod on the official mod API (`horizon-mod.toml`, `src/lib.rs`, `impl mod_api::Hooks`). The game-free logic is the
+`src/jei_core/` module (a native package allows one crate and nothing outside `src/`); the old fork bundle in
+`mixins/jei` is unused.
 
 Done: the ingredient list over the inventory and creative screens (registry items, search with JEI's tokenizer, prefixes
 and modes, paging by click or wheel), a search box that takes typing, cheat give.
@@ -29,12 +29,12 @@ Another mod lists `jei` under `[dependencies]` in its `horizon-mod.toml` and cal
 example in `client_tick_post`. The viewer rebuilds its recipes when the registry changes. Guard calls with
 `mod_api::if_installed!(host, jei, { .. })` when JEI is optional.
 
-Tests: `cargo test --lib` in a copy with the SDK path pointed at upstream's `horizon-mod-api` (9 tests: plugin
-registry, search modes, hide mode, completion, history).
+Tests: `cargo test --lib` in a copy with the SDK path pointed at upstream's `horizon-mod-api` (75 tests: the
+`jei_core` module and the glue).
 
 ## Fidelity to the Java screens
 
-Geometry is ported into jei-core (`recipe_gui`, `overlay_layout`, with tests): the recipe screen (panel size, category and
+Geometry is ported into the `jei_core` module (`recipe_gui`, `overlay_layout`, with tests): the recipe screen (panel size, category and
 page arrows, title, tabs above the panel, `RecipeGuiGrid` cells with their side buttons, `RECIPE_BORDER`), and the
 ingredient list overlay (search field 20 high, config button 20 by 20 at its right end, navigation row, background and
 slot backgrounds). Textures cannot be drawn by a mod yet (the draw context has fills, text and items), so each sprite of

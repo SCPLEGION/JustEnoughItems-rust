@@ -1,8 +1,8 @@
 # JEI on Horizon: port plan
 
 JEI (Java, MC 26.3, MIT) is a Horizon **native mod** in `mods/jei/` (crate `mod-jei`, `horizon-mod.toml`), on the mod API
-(`#[mod_api::horizon_mod] impl Hooks`). All logic that needs no game lives in `mods/jei/core` (`jei-core`, `cargo test`,
-63 tests). The Java tree stays as the spec. The old `mixins/jei/` bundle is unused. Horizon helpers the mod needs are
+(`#[mod_api::horizon_mod] impl Hooks`). All logic that needs no game lives in `mods/jei/src/jei_core/` (a module of the one crate, as the native package
+layout allows no second crate; `cargo test --lib` of the mod crate, 75 tests). The Java tree stays as the spec. The old `mixins/jei/` bundle is unused. Horizon helpers the mod needs are
 added to the SCPLEGION/horizon fork (the `[native] horizon` pin points at it); nothing is opened on the official repo
 without the user.
 
@@ -46,9 +46,8 @@ dispatched from the bound keys: `toggleOverlay`, `focusSearch`, `previousPage`/`
 `copy.recipe.id`, `shareToChat`.
 
 Screens and behaviour:
-1. **Brewing category**: waits for a `brewing_recipes()` helper on the fork (requested).
-2. **Grindstone category** (`plugins/vanilla/grindstone`): no helper; needs the grindstone rules (a host helper or a
-   port of `GrindstoneRecipeMaker`).
+1. **Brewing and grindstone categories** are in (fork helpers `brewing_recipes`, `grindstone_recipes`), but potion
+   variants share one item id, so the bottles of a brewing recipe are not told apart: recipes need to carry stacks.
 3. **Fuel per furnace type** (smoking/blasting speeds) and the fuel and compost layouts drawn inside the layout
    (the text is under it now).
 4. **Recipe bookmarks**: bookmarks store ingredients only; `bookmarkOutputAsRecipe` and the bookmark list's recipe
@@ -60,9 +59,8 @@ Screens and behaviour:
 7. **Ingredient types beyond items**: fluids and other mods' types (needs the API's ingredient-type registry).
 8. **Inventory integration**: shift to exclusion areas of the inventory effects, the recipe book and toasts
    (`toastReflowEnabled`, `compactInventoryEffects`), cheat give modes, `quickMove`.
-9. **Sort stages** for the ingredient list (`ingredientSortStages`) and `recipeSortingCraftable` (needs the player's
-   inventory in the client API); `recipeSortingBookmarks` is done. `giveMode = MOUSE_PICKUP` and the `tagContentTooltip*`
-   options need the cursor stack and the tag of an ingredient from the API.
+9. **Sort stages** for the ingredient list (`ingredientSortStages`); `recipeSortingBookmarks`, `recipeSortingCraftable` (crafting only, one item per slot),
+   `giveMode` and the tag tooltip (`Accepts any: #tag`) are done.
 10. **Language**: titles and strings are English; read the game's language files.
 11. **Real run**: needs the `mixins` pin from `cargo horizon-mod new` and a prebuilt game; then fix whatever the first
     in-game run shows (sprite names and atlas packing of mod assets are unverified).

@@ -4,8 +4,8 @@
 //!
 //! JEI stores keys in Lucene and matches them with a literal substring wildcard (`*token*`, case-sensitive). The keys
 //! are held here in a plain map and matched with `str::contains`, which gives the same sets.
-use crate::prefix::{PREFIXES, PrefixInfo, SearchIndex, SearchMode, parse_token};
-use crate::tokenizer::{self, Token};
+use crate::jei_core::prefix::{PREFIXES, PrefixInfo, SearchIndex, SearchMode, parse_token};
+use crate::jei_core::tokenizer::{self, Token};
 use std::collections::{HashMap, HashSet};
 
 /// An element's id in the list (its position in the registry).

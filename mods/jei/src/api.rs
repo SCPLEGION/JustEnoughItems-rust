@@ -1,11 +1,11 @@
 //! The plugin API other mods call (`IModPlugin`: `registerCategories`, `registerRecipeCatalysts`, `registerRecipes`).
 //! A mod lists `jei` under `[dependencies]` in `horizon-mod.toml` and calls these from its own hooks; every code mod
 //! is linked into one binary, so the registry is a plain static the JEI mod reads when it builds its recipes.
-pub use jei_core::{
+pub use crate::jei_core::{
     plugin::{CategoryDef, CustomRecipe, PluginError},
     view::{self, Layout},
 };
-use jei_core::plugin::Registry;
+use crate::jei_core::plugin::Registry;
 use std::sync::Mutex;
 
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry { categories: Vec::new(), recipes: Vec::new(), version: 0 });

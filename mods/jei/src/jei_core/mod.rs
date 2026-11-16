@@ -1,4 +1,5 @@
 //! JEI's logic for Horizon (port of mezz.jei, MC 26.3). No game dependency: the glue lives in the bundle's modules.
+#![allow(dead_code)] // the whole of JEI's logic is ported; not every function has a caller yet
 pub mod bookmarks;
 pub mod completion;
 pub mod config;

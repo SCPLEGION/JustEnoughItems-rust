@@ -1,7 +1,7 @@
 //! Port of the geometry of `RecipesGui`, `RecipeGuiSizing`, `RecipeGuiGrid`, `RecipeGuiTabs` and the recipe layout's
 //! side buttons: where the panel, the category and page arrows, the title, the tabs and each recipe go. Paged mode
 //! only (`recipeGuiNavigationMode = PAGED`, the default).
-use crate::grid::Rect;
+use crate::jei_core::grid::Rect;
 
 pub const BORDER_PADDING: i32 = 6;
 pub const NAV_BAR_PADDING: i32 = 2;

@@ -1,5 +1,5 @@
 //! The recipes JEI shows, read from the game's tables (`Host::recipes_of_type`) into `jei-core`'s recipe manager.
-use jei_core::{
+use crate::jei_core::{
     plugin::CategoryDef,
     recipes::{RecipeManager, Role, Slot},
     view::{self, Kind, Layout},
@@ -24,6 +24,7 @@ pub struct UiRecipe {
 const FUEL: &str = "jei:smelting_fuel";
 const COMPOST: &str = "jei:compostable";
 const ANVIL: &str = "jei:anvil";
+const GRINDSTONE: &str = "jei:grindstone";
 
 /// `NumberFormat` with at most two fraction digits.
 fn trim_float(v: f32) -> String {
@@ -84,7 +85,7 @@ fn shaped(host: &dyn ClientHost, r: &Recipe) -> Option<((i32, i32), Vec<Vec<Stri
 
 pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes {
     let mut mgr = RecipeManager::new();
-    let cats: Vec<CategoryDef> = Kind::ALL.iter().filter(|k| **k != Kind::Brewing).map(|k| CategoryDef::vanilla(*k)).collect();
+    let cats: Vec<CategoryDef> = Kind::ALL.iter().map(|k| CategoryDef::vanilla(*k)).collect();
     for c in &cats {
         mgr.add_category(&c.recipe_type);
         mgr.add_crafting_station(&c.recipe_type, c.stations.clone());
@@ -202,6 +203,46 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         let note = a.costs.iter().min().map(|c| format!("Cost: {c}")).unwrap_or_default();
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: ANVIL.into(), note, grid: (1, 1), inputs: vec![left, right], outputs: out });
     }
+    // Brewing (`BrewingRecipeMaker`): one recipe per ingredient item with the bottles it turns and what they become.
+    // Potions share one item id, so the variants of a bottle are not told apart yet.
+    let mut brewing: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
+    for b in host.brewing_recipes() {
+        let list = |v: &[ItemStack]| -> Vec<String> { v.iter().filter_map(|s| id_of(names, s)).collect() };
+        let Some(ingredient) = list(&b.ingredient).into_iter().next() else { continue };
+        let (inputs, outputs) = (list(&b.input), list(&b.output));
+        let entry = match brewing.iter_mut().position(|e| e.0 == ingredient) {
+            Some(i) => &mut brewing[i],
+            None => {
+                brewing.push((ingredient, Vec::new(), Vec::new()));
+                brewing.last_mut().unwrap()
+            }
+        };
+        for (src, dst) in [(inputs, &mut entry.1), (outputs, &mut entry.2)] {
+            for id in src {
+                if !dst.contains(&id) {
+                    dst.push(id);
+                }
+            }
+        }
+    }
+    for (ingredient, inputs, outputs) in brewing {
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: Kind::Brewing.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![inputs.clone(), inputs.clone(), inputs, vec![ingredient]], outputs });
+    }
+    // The grindstone (`GrindstoneRecipeMaker`): repairs and disenchanting, with the experience range.
+    register(
+        &mut mgr,
+        &mut cats,
+        CategoryDef::custom(GRINDSTONE, "Grindstone", "minecraft:grindstone", Layout { width: 116, height: 61, slots: vec![view::input(0, 18, 3), view::input(1, 18, 24), view::output(98, 19)], arrow: None }),
+    );
+    for g in host.grindstone_recipes() {
+        let list = |v: &[ItemStack]| -> Vec<String> { v.iter().filter_map(|s| id_of(names, s)).collect() };
+        let (top, bottom, out) = (list(&g.top), list(&g.bottom), list(&g.output));
+        if top.is_empty() && bottom.is_empty() || out.is_empty() {
+            continue;
+        }
+        let note = if g.xp_max > 0 { format!("XP: {}-{}", g.xp_min, g.xp_max) } else { String::new() };
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: GRINDSTONE.into(), note, grid: (1, 1), inputs: vec![top, bottom], outputs: out });
+    }
     // Categories and recipes other mods registered through `api` (`IModPlugin`).
     let plugins = crate::api::snapshot();
     for def in plugins.categories {
@@ -210,7 +251,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         }
     }
     for r in plugins.recipes {
-        let id_of = |s: &String| jei_core::plugin::split_ingredient(s).0.to_owned();
+        let id_of = |s: &String| crate::jei_core::plugin::split_ingredient(s).0.to_owned();
         let inputs: Vec<Vec<String>> = r.inputs.iter().map(|slot| slot.iter().map(id_of).collect()).collect();
         let outputs: Vec<String> = r.outputs.first().map(|slot| slot.iter().map(id_of).collect()).unwrap_or_default();
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: r.recipe_type, note: r.notes.join(" "), grid: (1, 1), inputs, outputs });

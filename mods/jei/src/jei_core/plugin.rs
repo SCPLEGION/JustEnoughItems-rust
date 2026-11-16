@@ -1,7 +1,7 @@
 //! The plugin surface for other mods (`IModPlugin`, `IRecipeCategoryRegistration`, `IRecipeRegistration`,
 //! `IRecipeCatalystRegistration`) in data form: a mod registers a category (its size, slots and arrow), its crafting
 //! stations and its recipes (the ingredients of each slot). JEI's glue draws them like the vanilla categories.
-use crate::view::{self, Kind, Layout, SlotRole};
+use crate::jei_core::view::{self, Kind, Layout, SlotRole};
 
 /// A recipe category: a vanilla one (laid out by `view::layout`) or a mod's own with a fixed layout.
 #[derive(Clone, Debug, PartialEq, Eq)]

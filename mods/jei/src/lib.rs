@@ -1,5 +1,5 @@
 //! JEI on Horizon's own mod API: the ingredient list over container screens. All logic is `jei-core`.
-use jei_core::{
+use crate::jei_core::{
     grid::{self, GridConfig, Rect},
     overlay_layout, recipe_gui,
     recipes::{Focus, RecipeId, Role},
@@ -18,6 +18,7 @@ use mod_api::{
     ScreenMouseButtonPressedPreEvent, ScreenMouseScrolledPreEvent, ClientTickPostEvent, Flow, ScreenRenderPostEvent, ScreenView, Text,
 };
 pub mod api;
+mod jei_core;
 mod recipes;
 mod ui;
 
@@ -88,6 +89,12 @@ struct State {
     /// The recipes looked up, newest first (`LookupHistory`), saved when `lookups_dirty`.
     lookups: LookupHistory,
     search_history: SearchHistory,
+    bookmarks_hidden: bool,
+    ticks: u32,
+    /// Item ids in the player's inventory, refreshed each second, for `recipeSortingCraftable`.
+    inventory: std::collections::HashSet<String>,
+    /// The ingredients of each recipe slot drawn last frame, for the tag tooltip.
+    slot_lists: Vec<(Rect, Vec<String>)>,
     lookups_dirty: bool,
     config_dirty: bool,
     bookmarks_dirty: bool,
@@ -378,7 +385,7 @@ fn open_recipes(s: &mut State, item: &str, role: Role) {
         return;
     }
     let mut recipes = r.mgr.recipes(&r.cats[cats[0]].recipe_type, std::slice::from_ref(&focus), false, &|_| true);
-    sort_recipes(&mut recipes, r, &s.bookmarks, s.config.bool("recipes", "recipeSortingBookmarks"));
+    sort_recipes(&mut recipes, r, s);
     if let Some(old) = s.view.take() {
         s.history.push(old);
     }
@@ -387,10 +394,18 @@ fn open_recipes(s: &mut State, item: &str, role: Role) {
 
 /// `RecipeSorter` with `recipeSortingBookmarks`: recipes whose output is bookmarked come first, the rest keep their order.
 /// (`recipeSortingCraftable` needs the player's inventory, which the mod API does not give a client mod yet.)
-fn sort_recipes(recipes: &mut [jei_core::recipes::RecipeId], r: &recipes::Recipes, bookmarks: &BookmarkList, enabled: bool) {
-    if enabled {
-        recipes.sort_by_key(|id| !r.ui.get(*id as usize).and_then(|u| u.outputs.first()).is_some_and(|o| bookmarks.contains(o)));
-    }
+fn sort_recipes(recipes: &mut [crate::jei_core::recipes::RecipeId], r: &recipes::Recipes, s: &State) {
+    let (by_bookmark, by_craftable) = (s.config.bool("recipes", "recipeSortingBookmarks"), s.config.bool("recipes", "recipeSortingCraftable"));
+    let rank = |id: &crate::jei_core::recipes::RecipeId| -> u8 {
+        let Some(u) = r.ui.get(*id as usize) else { return 2 };
+        if by_bookmark && u.outputs.first().is_some_and(|o| s.bookmarks.contains(o)) {
+            return 0;
+        }
+        // Craftable: every filled input slot has an ingredient the player carries.
+        let craftable = u.recipe_type == "minecraft:crafting" && u.inputs.iter().filter(|i| !i.is_empty()).all(|i| i.iter().any(|x| s.inventory.contains(x)));
+        if by_craftable && craftable { 1 } else { 2 }
+    };
+    recipes.sort_by_key(rank);
 }
 
 /// The search box loses focus: its text goes into the search history.
@@ -403,14 +418,16 @@ fn unfocus(s: &mut State) {
 }
 
 fn select_category(s: &mut State, cat: usize) {
-    let sort = s.config.bool("recipes", "recipeSortingBookmarks");
-    let (Some(r), Some(v)) = (s.recipes.as_ref(), s.view.as_mut()) else { return };
+    let Some(mut v) = s.view.take() else { return };
     v.cat = cat;
     v.page = 0;
     v.first = 0;
     s.tab_page = None;
-    v.recipes = r.mgr.recipes(&r.cats[v.cats[cat]].recipe_type, std::slice::from_ref(&v.focus), false, &|_| true);
-    sort_recipes(&mut v.recipes, r, &s.bookmarks, sort);
+    if let Some(r) = s.recipes.as_ref() {
+        v.recipes = r.mgr.recipes(&r.cats[v.cats[cat]].recipe_type, std::slice::from_ref(&v.focus), false, &|_| true);
+        sort_recipes(&mut v.recipes, r, s);
+    }
+    s.view = Some(v);
 }
 
 fn cycle(s: &State, list: &[String]) -> Option<String> {
@@ -577,6 +594,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
 
     // The recipes of the page.
     let mut hot = Vec::new();
+    let mut lists = Vec::new();
     for slot_index in 0..per {
         let idx = (first_recipe + slot_index) as usize;
         let Some(u) = ui_at(idx) else { break };
@@ -595,6 +613,9 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
                 SlotRole::Output => u.outputs.clone(),
                 SlotRole::Fuel => vec!["minecraft:coal".to_owned()],
             };
+            if list.len() > 1 {
+                lists.push((rect, list.clone()));
+            }
             if let Some(id) = cycle(s, &list) {
                 if let Some(&k) = s.index.get(&id) {
                     draw.item(s.keys[k], [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
@@ -629,6 +650,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     }
     hot.extend(station_hot);
     s.hot = hot;
+    s.slot_lists = lists;
     // `LookupHistory`: the recipes looked up lately, under the panel; a click opens that item's recipes.
     s.lookup_rects.clear();
     // Shown when `lookups.enabled`, in at most `maxRows` rows of `maxColumns` (and what fits under the panel).
@@ -815,6 +837,8 @@ impl Hooks for Mod {
             // The bookmark list, left of the window.
             let marks_area = overlay_layout::available_grid_area_in(Rect::new(0, 0, screen.rect[0] as i32, bh), false);
             let marks = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::bookmark_list() }, marks_area, false);
+            // `toggleBookmarkOverlay` hides the list; its bookmarks stay.
+            let marks = if s.bookmarks_hidden { Rect::new(0, 0, 0, 0) } else { marks };
             s.marks = marks;
             if !marks.is_empty() {
                 let slot_bg = marks.expand_by(overlay_layout::INNER_PADDING);
@@ -908,6 +932,19 @@ impl Hooks for Mod {
                 lines.extend(s.infos[k].data.tooltip.iter().map(|l| Text::literal(l.clone())));
                 if s.config.bool("tooltips", "showCreativeTabNamesEnabled") {
                     lines.extend(s.infos[k].data.creative_tabs.iter().map(|tab| Text::literal(tab.clone())));
+                }
+                // `tagContentTooltipEnabled`: a slot that accepts several items names the tag they share (`jei.tooltip.recipe.tag`).
+                if s.config.bool("tooltips", "tagContentTooltipEnabled")
+                    && let Some((_, list)) = s.slot_lists.iter().find(|(r, _)| r.contains(cx, cy))
+                {
+                    let tags: Vec<Vec<String>> = list.iter().filter_map(|i| s.index.get(i)).map(|&k| host.item_tags(s.keys[k])).collect();
+                    if let Some(first) = tags.first() {
+                        let common: Vec<&String> = first.iter().filter(|t| tags.iter().all(|o| o.contains(t))).collect();
+                        // Hidden when it would list a single item (`hideSingleTagContentTooltipEnabled`).
+                        if let Some(tag) = common.first() {
+                            lines.push(Text::literal(format!("Accepts any: #{tag}")));
+                        }
+                    }
                 }
                 lines.push(Text::literal(mod_name(ns)));
                 let _ = draw.gui_tooltip(&lines, [cx as f32, cy as f32]);
@@ -1007,6 +1044,12 @@ impl Hooks for Mod {
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
         let (give, transfer) = STATE.with_borrow_mut(|s| (s.give.take(), s.pending_transfer.take()));
         STATE.with_borrow_mut(|s| {
+            // The inventory's item ids, once a second, for `recipeSortingCraftable`.
+            s.ticks = s.ticks.wrapping_add(1);
+            if s.ticks % 20 == 0 && s.loaded {
+                let names = &s.names;
+                s.inventory = host.local_player_inventory().iter().filter_map(|st| names.get(&st.item()).cloned()).collect();
+            }
             if std::mem::take(&mut s.bookmarks_dirty) {
                 host.set_setting("jei", "bookmarks", &s.bookmarks.save());
             }
@@ -1018,7 +1061,14 @@ impl Hooks for Mod {
             }
         });
         if let Some((item, count)) = give {
-            let _ = host.give(item, count);
+            // `giveMode`: MOUSE_PICKUP puts the stack on the cursor when it is empty, INVENTORY gives it straight away.
+            let mouse = STATE.with_borrow(|s| s.config.text("cheating", "giveMode") == "MOUSE_PICKUP");
+            match ItemStack::new(item, count) {
+                Some(stack) if mouse && host.screen_carried_stack().is_none() => host.set_screen_carried_stack(Some(stack)),
+                _ => {
+                    let _ = host.give(item, count);
+                }
+            }
         }
         if let Some((id, all)) = transfer {
             host.transfer_recipe_id(&id, all);
@@ -1086,6 +1136,10 @@ impl Hooks for Mod {
                         let on = !s.config.bool("ingredientList", "overlaysEnabled");
                         s.config.set("ingredientList", "overlaysEnabled", if on { "true" } else { "false" });
                         s.config_dirty = true;
+                        return Flow::Cancel;
+                    }
+                    Some(Action::ToggleBookmarkOverlay) => {
+                        s.bookmarks_hidden = !s.bookmarks_hidden;
                         return Flow::Cancel;
                     }
                     Some(Action::ToggleEditMode) => {
@@ -1254,7 +1308,7 @@ mod tests {
     #[test]
     fn completion_is_off_without_the_option_or_focus() {
         let mut s = completing("@m");
-        unfocus(s);
+        s.focused = false;
         assert!(suggestions(&s).is_empty());
         let mut s = completing("@m");
         s.config.set("search", "searchCompletionEnabled", "false");
