@@ -31,7 +31,9 @@ const HOVER: u32 = 0x80FFFFFF;
 #[derive(Default)]
 struct State {
     loaded: bool,
-    keys: Vec<ItemKey>,
+    /// The item of each ingredient, `None` for the ones of another type (`types`).
+    keys: Vec<Option<ItemKey>>,
+    types: Vec<api::IngredientType>,
     ids: Vec<String>,
     infos: Vec<ListElementInfo>,
     search: Option<ElementSearch>,
@@ -356,10 +358,33 @@ fn load(host: &dyn ClientHost, s: &mut State) {
         };
         let i = s.infos.len();
         s.infos.push(ListElementInfo::new(data, &cfg, i));
-        s.keys.push(key);
+        s.keys.push(Some(key));
         s.index.insert(id.clone(), s.keys.len() - 1);
         names.insert(key, id.clone());
         s.ids.push(id);
+    }
+    // Ingredients of other types (fluids, and what other mods register through `api::register_ingredient_type`).
+    api::register_ingredient_type(fluid_type());
+    s.types = api::ingredient_types();
+    for ty in s.types.clone() {
+        for id in (ty.list)(host) {
+            let (ns, path) = id.trim_start_matches(ty.prefix).split_once(':').map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap_or(("minecraft".to_owned(), id.clone()));
+            let data = IngredientData {
+                display_name: (ty.name)(host, &id),
+                namespace: ns.clone(),
+                path,
+                display_mod_id: ns.clone(),
+                mod_name: mod_name(&ns),
+                display_mod_name: mod_name(&ns),
+                mod_aliases: vec![vec![]],
+                ..Default::default()
+            };
+            let i = s.infos.len();
+            s.infos.push(ListElementInfo::new(data, &cfg, i));
+            s.keys.push(None);
+            s.index.insert(id.clone(), s.keys.len() - 1);
+            s.ids.push(id);
+        }
     }
     s.recipes = Some(recipes::load(host, &names));
     s.plugin_version = api::version();
@@ -427,6 +452,47 @@ fn unfocus(s: &mut State) {
         s.search_history.add(&q);
     }
     s.focused = false;
+}
+
+/// Draws ingredient `id` (an item, or one of a registered ingredient type) in a 16 square at `at`.
+fn draw_ing(s: &State, draw: &mut dyn DrawContext, id: &str, at: [f32; 2]) {
+    let Some(&k) = s.index.get(id) else { return };
+    match s.keys[k] {
+        Some(key) => {
+            draw.item(key, at, 16.0);
+        }
+        None => {
+            if let Some(ty) = s.types.iter().find(|t| id.starts_with(t.prefix)) {
+                (ty.draw)(draw, id, at, 16.0);
+            }
+        }
+    }
+}
+
+/// An ingredient's display name.
+fn ing_name(s: &State, host: &dyn ClientHost, id: &str, k: usize) -> String {
+    match s.keys[k] {
+        Some(key) => ItemStack::new(key, 1).map_or_else(|| id.to_owned(), |st| host.hover_name(&st)),
+        None => s.types.iter().find(|t| id.starts_with(t.prefix)).map_or_else(|| id.to_owned(), |t| (t.name)(host, id)),
+    }
+}
+
+/// Fluids (`FluidStack`'s ingredient type): the source fluids of the registry.
+fn fluid_type() -> api::IngredientType {
+    api::IngredientType {
+        prefix: "fluid:",
+        list: |host| {
+            host.registry_entries("minecraft:fluid")
+                .unwrap_or_default()
+                .iter()
+                .map(|f| f.to_string())
+                .filter(|f| f != "minecraft:empty" && !f.contains("flowing_"))
+                .map(|f| format!("fluid:{f}"))
+                .collect()
+        },
+        draw: |draw, id, at, size| draw.fluid(id.trim_start_matches("fluid:"), at, size),
+        name: |host, id| host.fluid_name(id.trim_start_matches("fluid:")),
+    }
 }
 
 fn select_category(s: &mut State, cat: usize) {
@@ -542,9 +608,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
         ui::side_tab(draw, st.tab, "catalyst_tab_v2");
         ui::side_tab(draw, st.inner, "recipe_catalyst_slot_background_v2");
         for (rect, id) in st.slots.iter().zip(cat.stations.iter()) {
-            if let Some(&k) = s.index.get(id) {
-                draw.item(s.keys[k], [rect.x as f32, rect.y as f32], 16.0);
-            }
+            draw_ing(s, draw, id, [rect.x as f32, rect.y as f32]);
             if rect.contains(cx, cy) {
                 draw.fill(rect_f(*rect), HOVER);
             }
@@ -562,9 +626,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
         for (i, rect) in t.rects.iter().enumerate() {
             let index = t.page * t.per_page + i;
             ui::tab(draw, *rect, index == selected);
-            if let Some(&k) = s.index.get(&r.cats[v.cats[index]].icon) {
-                draw.item(s.keys[k], [(rect.x + 4) as f32, (rect.y + 5) as f32], 16.0);
-            }
+            draw_ing(s, draw, &r.cats[v.cats[index]].icon, [(rect.x + 4) as f32, (rect.y + 5) as f32]);
             s.hits.push((*rect, Hit::Tab(index)));
         }
         if t.page_count > 1 {
@@ -629,9 +691,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
                 lists.push((rect, list.clone()));
             }
             if let Some(id) = cycle(s, &list) {
-                if let Some(&k) = s.index.get(&id) {
-                    draw.item(s.keys[k], [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
-                }
+                draw_ing(s, draw, &id, [(rect.x + 1) as f32, (rect.y + 1) as f32]);
                 if rect.contains(cx, cy) {
                     draw.fill([(rect.x + 1) as f32, (rect.y + 1) as f32, 16.0, 16.0], HOVER);
                 }
@@ -669,10 +729,12 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     let per_row = (((area.w - 4) / 18).max(1) as usize).min(s.config.int("lookups", "maxColumns") as usize);
     let rows = if s.config.bool("lookups", "enabled") { s.config.int("lookups", "maxRows") as usize } else { 0 };
     for (i, id) in s.lookups.items().iter().take(per_row * rows).enumerate() {
-        let Some(&k) = s.index.get(id) else { continue };
+        if !s.index.contains_key(id) {
+            continue;
+        }
         let rect = Rect::new(area.x + 2 + (i % per_row) as i32 * 18, area.y + area.h + 4 + (i / per_row) as i32 * 18, 18, 18);
         ui::slot(draw, rect);
-        draw.item(s.keys[k], [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
+        draw_ing(s, draw, id, [(rect.x + 1) as f32, (rect.y + 1) as f32]);
         s.lookup_rects.push((rect, id.clone()));
     }
 }
@@ -837,7 +899,7 @@ impl Hooks for Mod {
                 }
                 let Some(&idx) = s.results.get(first as usize + n) else { break };
                 let a = slot.area;
-                draw.item(s.keys[idx], [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
+                draw_ing(s, draw, &s.ids[idx], [(a.x + 1) as f32, (a.y + 1) as f32]);
                 hot.push((a, s.ids[idx].clone()));
                 if s.edit && is_hidden(&s.hidden, &s.ids[idx]) {
                     draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], 0x80FF0000);
@@ -862,9 +924,7 @@ impl Hooks for Mod {
                 }
                 for (slot, id) in grid::calculate_slots(marks, &[], None, 0).iter().zip(s.bookmarks.items().to_vec()) {
                     let a = slot.area;
-                    if let Some(&k) = s.index.get(&id) {
-                        draw.item(s.keys[k], [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
-                    }
+                    draw_ing(s, draw, &id, [(a.x + 1) as f32, (a.y + 1) as f32]);
                     if a.contains(cx, cy) {
                         draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], HOVER);
                     }
@@ -938,7 +998,7 @@ impl Hooks for Mod {
                 && let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(cx, cy))
                 && let Some(&k) = s.index.get(id)
             {
-                let name = ItemStack::new(s.keys[k], 1).map_or_else(|| id.clone(), |st| host.hover_name(&st));
+                let name = ing_name(s, host, id, k);
                 let ns = id.split_once(':').map_or("minecraft", |p| p.0);
                 let mut lines = vec![Text::literal(name)];
                 lines.extend(s.infos[k].data.tooltip.iter().map(|l| Text::literal(l.clone())));
@@ -949,7 +1009,7 @@ impl Hooks for Mod {
                 if s.config.bool("tooltips", "tagContentTooltipEnabled")
                     && let Some((_, list)) = s.slot_lists.iter().find(|(r, _)| r.contains(cx, cy))
                 {
-                    let tags: Vec<Vec<String>> = list.iter().filter_map(|i| s.index.get(i)).map(|&k| host.item_tags(s.keys[k])).collect();
+                    let tags: Vec<Vec<String>> = list.iter().filter_map(|i| s.index.get(i)).filter_map(|&k| s.keys[k]).map(|key| host.item_tags(key)).collect();
                     if let Some(first) = tags.first() {
                         let common: Vec<&String> = first.iter().filter(|t| tags.iter().all(|o| o.contains(t))).collect();
                         // Hidden when it would list a single item (`hideSingleTagContentTooltipEnabled`).
@@ -1040,7 +1100,8 @@ impl Hooks for Mod {
                 {
                     if s.cheat {
                         // Cheat mode: left gives a stack, right one (needs creative mode).
-                        s.give = Some((s.keys[idx], if right { 1 } else { 64 }));
+                        // Only items can be given; a fluid has no stack.
+                        s.give = s.keys[idx].map(|k| (k, if right { 1 } else { 64 }));
                     } else {
                         // Left: how it is made; right: what it is used in.
                         let id = s.ids[idx].clone();
@@ -1228,7 +1289,7 @@ impl Hooks for Mod {
                         // `jei.key.showRecipe` (R) and `jei.key.showUses` (U) on the stack under the cursor.
                         let (x, y) = (event.screen.mouse[0] as i32, event.screen.mouse[1] as i32);
                         let over = s.hot.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| id.clone()).or_else(|| {
-                            host.screen_hovered_stack().map(|st| st.item()).and_then(|k| s.keys.iter().position(|x| *x == k)).map(|i| s.ids[i].clone())
+                            host.screen_hovered_stack().map(|st| st.item()).and_then(|k| s.keys.iter().position(|x| *x == Some(k))).map(|i| s.ids[i].clone())
                         });
                         if let Some(id) = over {
                             open_recipes(s, &id, if action == Some(Action::ShowRecipe) { Role::Output } else { Role::Input });

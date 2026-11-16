@@ -6,7 +6,25 @@ pub use crate::jei_core::{
     view::{self, Layout},
 };
 use crate::jei_core::plugin::Registry;
+use mod_api::{ClientHost, DrawContext};
 use std::sync::Mutex;
+
+/// An ingredient type beyond items (`IIngredientType`, `IIngredientHelper`, `IIngredientRenderer`): fluids are one, and a
+/// mod's chemicals can be another. Its ingredients are listed as `prefix` + a resource id (`fluid:minecraft:water`), which
+/// is also the id recipes, bookmarks and the search use.
+#[derive(Clone)]
+pub struct IngredientType {
+    /// `fluid:`: tells this type's ids from items' (an item's id has no prefix).
+    pub prefix: &'static str,
+    /// Every ingredient of the type, with the prefix, in registry order.
+    pub list: fn(&dyn ClientHost) -> Vec<String>,
+    /// Draws one ingredient in a `size` square at `at`.
+    pub draw: fn(&mut dyn DrawContext, id: &str, at: [f32; 2], size: f32),
+    /// Its display name.
+    pub name: fn(&dyn ClientHost, id: &str) -> String,
+}
+
+static TYPES: Mutex<Vec<IngredientType>> = Mutex::new(Vec::new());
 
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry { categories: Vec::new(), recipes: Vec::new(), version: 0 });
 
@@ -27,6 +45,20 @@ pub fn add_catalyst(recipe_type: &str, item: &str) -> Result<(), PluginError> {
 /// Adds a recipe to a registered category.
 pub fn add_recipe(recipe: CustomRecipe) -> Result<(), PluginError> {
     with(|r| r.add_recipe(recipe))
+}
+
+/// Registers an ingredient type; a prefix already registered is kept as it was.
+pub fn register_ingredient_type(ty: IngredientType) {
+    let mut types = TYPES.lock().unwrap_or_else(|e| e.into_inner());
+    if !types.iter().any(|t| t.prefix == ty.prefix) {
+        types.push(ty);
+        drop(types);
+        with(|r| r.version += 1);
+    }
+}
+
+pub(crate) fn ingredient_types() -> Vec<IngredientType> {
+    TYPES.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Raised by every change, so the viewer rebuilds.

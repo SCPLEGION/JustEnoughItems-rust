@@ -56,7 +56,9 @@ Screens and behaviour:
    (postponed until Mekanism resumes).
 6. **Recipe screen**: GUI resize handles (`guiResizeEnabled`), `recipeGuiHeight/Width`, ingredient summary, focus
    highlight of the focused ingredient, the recipe-id copy and "recipe source" tooltips, scroll smoothing.
-7. **Ingredient types beyond items**: fluids and other mods' types (needs the API's ingredient-type registry).
+7. **Ingredient types beyond items**: fluids are an `api::IngredientType` (`fluid:` ids, drawn with `DrawContext::fluid`) and other
+   mods register theirs (`jei::api::register_ingredient_type`: Mekanism chemicals later). Fluid amounts in recipe slots, fluid
+   tank sizes and the fluid tooltip content (`lookupFluidContentsEnabled`) are not ported.
 8. **Inventory integration**: shift to exclusion areas of the inventory effects, the recipe book and toasts
    (`toastReflowEnabled`, `compactInventoryEffects`), cheat give modes, `quickMove`.
 9. **Sort stages**: the default stages (mod name, creative menu) are applied; the `ingredientSortStages` option and the
