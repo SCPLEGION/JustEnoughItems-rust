@@ -8,7 +8,7 @@ use jei_core::{
     highlight, keys,
     completion::{self, Candidate, PrefixView},
     config::Config,
-    history::LookupHistory,
+    history::{LookupHistory, SearchHistory},
     ingredient::{FilterConfig, IngredientData, ListElementInfo},
     prefix::{default_mode, SearchIndex, SearchMode, PREFIXES},
     search::ElementSearch,
@@ -82,6 +82,7 @@ struct State {
     config: Config,
     /// The recipes looked up, newest first (`LookupHistory`), saved when `lookups_dirty`.
     lookups: LookupHistory,
+    search_history: SearchHistory,
     lookups_dirty: bool,
     config_dirty: bool,
     bookmarks_dirty: bool,
@@ -384,6 +385,15 @@ fn sort_recipes(recipes: &mut [jei_core::recipes::RecipeId], r: &recipes::Recipe
     if enabled {
         recipes.sort_by_key(|id| !r.ui.get(*id as usize).and_then(|u| u.outputs.first()).is_some_and(|o| bookmarks.contains(o)));
     }
+}
+
+/// The search box loses focus: its text goes into the search history.
+fn unfocus(s: &mut State) {
+    if s.focused {
+        let q = s.query.clone();
+        s.search_history.add(&q);
+    }
+    s.focused = false;
 }
 
 fn select_category(s: &mut State, cat: usize) {
@@ -955,7 +965,7 @@ impl Hooks for Mod {
                 claimed = true;
                 return;
             }
-            s.focused = false;
+            unfocus(s);
             let per = grid::calculate_slots(s.grid, &[], None, 0).len() as i32;
             if s.nav.contains(x, y) {
                 let pages = grid::page_count(s.results.len() as i32, per);
@@ -1046,6 +1056,14 @@ impl Hooks for Mod {
                 return Flow::Continue;
             }
             let action = key_action(host, event.key, event.modifiers, s.view.is_some());
+            if s.focused && matches!(action, Some(keys::Action::PreviousSearch | keys::Action::NextSearch)) {
+                let text = if action == Some(keys::Action::PreviousSearch) { s.search_history.previous() } else { s.search_history.next() };
+                if let Some(text) = text.map(str::to_owned) {
+                    s.query = text;
+                    refilter(s);
+                }
+                return Flow::Cancel;
+            }
             if !s.focused || action == Some(keys::Action::FocusSearch) {
                 use keys::Action;
                 match action {
@@ -1057,6 +1075,11 @@ impl Hooks for Mod {
                         let on = !s.config.bool("ingredientList", "overlaysEnabled");
                         s.config.set("ingredientList", "overlaysEnabled", if on { "true" } else { "false" });
                         s.config_dirty = true;
+                        return Flow::Cancel;
+                    }
+                    Some(Action::ToggleEditMode) => {
+                        s.edit = !s.edit;
+                        refilter(s);
                         return Flow::Cancel;
                     }
                     Some(Action::ToggleCheatMode) => {
@@ -1139,7 +1162,7 @@ impl Hooks for Mod {
                         accept(s, &c);
                     }
                 }
-                "key.keyboard.enter" | "key.keyboard.keypad.enter" | "key.keyboard.escape" => s.focused = false,
+                "key.keyboard.enter" | "key.keyboard.keypad.enter" | "key.keyboard.escape" => unfocus(s),
                 _ => {}
             }
             Flow::Cancel
@@ -1209,7 +1232,7 @@ mod tests {
     #[test]
     fn completion_is_off_without_the_option_or_focus() {
         let mut s = completing("@m");
-        s.focused = false;
+        unfocus(s);
         assert!(suggestions(&s).is_empty());
         let mut s = completing("@m");
         s.config.set("search", "searchCompletionEnabled", "false");
