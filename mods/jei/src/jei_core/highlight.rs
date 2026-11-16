@@ -1,6 +1,6 @@
 //! `SearchSyntaxHighlighter`: the colour of each character of the search text.
 
-use crate::tokenizer::{tokenize, Token};
+use crate::jei_core::tokenizer::{tokenize, Token};
 
 pub const PREFIX_COLOR: u32 = 0xFF55FFFF;
 pub const PREFIXED_CONTENT_COLOR: u32 = 0xFF55FF55;

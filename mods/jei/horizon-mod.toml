@@ -5,8 +5,9 @@ description = "JEI for Horizon: an ingredient list with search, bookmarks and re
 authors = []
 api = "0.2"
 side = "client"
-capabilities = []
+capabilities = ["registries"]
 
 [native]
 game = "26.3"
-horizon = "e91608160a8a36e22e3b2a8291f30ccf4966dfe7"
+horizon = "04d81384506100f21a6e995d28fcc154a0ad9224"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

@@ -1,8 +1,8 @@
 //! `SearchCompletionOverlay`'s candidates: what the search box can complete at the cursor (prefixes, the `-` and `|`
 //! operators, and the strings of the indexes that complete dynamically).
 
-use crate::prefix::SearchMode;
-use crate::tokenizer::{tokenize, Token};
+use crate::jei_core::prefix::SearchMode;
+use crate::jei_core::tokenizer::{tokenize, Token};
 
 /// `DYNAMIC_CANDIDATE_BATCH_SIZE`: how many dynamic candidates are listed before "more" is asked for.
 pub const DYNAMIC_BATCH: usize = 100;

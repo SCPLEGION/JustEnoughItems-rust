@@ -1,7 +1,7 @@
 //! The look of JEI's own widgets. The sprites of the Java mod ship in `assets/jei/textures/gui/sprites` and are drawn
 //! with `DrawContext::sprite` and `gui_nine_slice` as `jei:gui/sprites/<name>`; where the game has not loaded them (they
 //! are probed once) the same widgets are rebuilt from the sprites' pixels with fills.
-use jei_core::grid::Rect;
+use crate::jei_core::grid::Rect;
 use mod_api::DrawContext;
 
 fn f(r: Rect) -> [f32; 4] {

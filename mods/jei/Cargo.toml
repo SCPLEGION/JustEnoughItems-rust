@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 # The pinned SDK's API crate, fetched into .horizon/sdk/ by any `cargo horizon-mod` command.
 horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
-jei-core = { path = "core" }
