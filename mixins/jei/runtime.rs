@@ -9,7 +9,7 @@ use jei_core::bookmarks::BookmarkList;
 use jei_core::grid::{self, GridConfig, Rect};
 use jei_core::plugin::{CategoryDef, CustomRecipe, PluginError, Registry};
 use jei_core::ingredient::{FilterConfig, IngredientData, ListElementInfo};
-use jei_core::prefix::{default_mode, SearchIndex};
+use jei_core::prefix::{default_mode, SearchIndex, SearchMode, PREFIXES};
 use jei_core::recipes::{Focus, RecipeId, RecipeManager, Role, Slot};
 use jei_core::search::ElementSearch;
 use jei_core::view::{Kind, SlotRole};
@@ -42,6 +42,15 @@ struct View {
     recipes: Vec<RecipeId>,
     focus: Focus,
 }
+
+/// The option rows of the options screen: (label, kind).
+const MODE_ROWS: [(&str, SearchIndex); 5] = [
+    ("Mod name search", SearchIndex::ModNames),
+    ("Tag search", SearchIndex::Tags),
+    ("Tooltip search", SearchIndex::Tooltips),
+    ("Color search", SearchIndex::Colors),
+    ("Creative tab search", SearchIndex::CreativeTabs),
+];
 
 #[derive(Default, Clone, Copy)]
 struct Places {
@@ -76,6 +85,15 @@ struct State {
     results: Vec<usize>,
     page: i32,
     view: Option<View>,
+    /// Earlier recipe views (`HistoryList`): Backspace goes back.
+    history: Vec<View>,
+    options: bool,
+    modes: Vec<(SearchIndex, SearchMode)>,
+    columns: i32,
+    rows: i32,
+    dirty: bool,
+    screen: (i32, i32),
+    options_button: Rect,
     places: Places,
     /// (rect, item id) of the hoverable stacks drawn this frame.
     hot: Vec<(Rect, String)>,
@@ -103,6 +121,14 @@ impl State {
             results: Vec::new(),
             page: 0,
             view: None,
+            history: Vec::new(),
+            options: false,
+            modes: PREFIXES.iter().map(|p| (p.index, default_mode(p.index))).collect(),
+            columns: 9,
+            rows: 16,
+            dirty: false,
+            screen: (0, 0),
+            options_button: Rect::EMPTY,
             places: Places::default(),
             hot: Vec::new(),
             started: Instant::now(),
@@ -132,6 +158,31 @@ pub fn add_recipe(recipe: CustomRecipe) -> Result<(), PluginError> {
     PLUGINS.with_borrow_mut(|p| p.add_recipe(recipe))
 }
 
+fn parse_mode(v: &str, default: SearchMode) -> SearchMode {
+    match v {
+        "ENABLED" => SearchMode::Enabled,
+        "REQUIRE_PREFIX" => SearchMode::RequireManualPrefix,
+        "DISABLED" => SearchMode::Disabled,
+        _ => default,
+    }
+}
+
+fn mode_name(m: SearchMode) -> &'static str {
+    match m {
+        SearchMode::Enabled => "ENABLED",
+        SearchMode::RequireManualPrefix => "REQUIRE_PREFIX",
+        SearchMode::Disabled => "DISABLED",
+    }
+}
+
+fn next_mode(m: SearchMode) -> SearchMode {
+    match m {
+        SearchMode::Enabled => SearchMode::RequireManualPrefix,
+        SearchMode::RequireManualPrefix => SearchMode::Disabled,
+        SearchMode::Disabled => SearchMode::Enabled,
+    }
+}
+
 fn mod_name(namespace: &str) -> String {
     namespace
         .split('_')
@@ -159,13 +210,15 @@ fn kind_of(k: NativeRecipeKind) -> Kind {
 /// Builds JEI's indexes from the game's items and recipes, once per set of them.
 fn load(state: &mut State, data: Arc<NativeRecipes>) {
     let plugins = PLUGINS.with_borrow(Clone::clone);
-    if plugins.version == state.plugin_version && state.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &data)) {
+    if !state.dirty && plugins.version == state.plugin_version && state.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &data)) {
         return;
     }
     state.plugin_version = plugins.version;
+    state.dirty = false;
     let cfg = state.cfg;
     state.infos.clear();
-    state.search = ElementSearch::new(default_mode);
+    let modes = state.modes.clone();
+    state.search = ElementSearch::new(|i| modes.iter().find(|(k, _)| *k == i).map_or(SearchMode::Disabled, |(_, m)| *m));
     for (i, item) in data.items.iter().enumerate() {
         let (ns, path) = item.id.split_once(':').unwrap_or(("minecraft", item.id.as_str()));
         let d = IngredientData {
@@ -236,14 +289,27 @@ pub(super) fn tick(game: &mut Game<'_>) {
     if STATE.with_borrow(|s| !s.settings_loaded) {
         let marks = game.native_setting("jei", "bookmarks").unwrap_or_default();
         let cheat = game.native_setting("jei", "cheat_mode").is_some_and(|v| v == "true");
+        let saved: Vec<(SearchIndex, SearchMode)> = PREFIXES
+            .iter()
+            .map(|p| {
+                let m = game.native_setting("jei", &format!("search_{}", p.id)).map_or(default_mode(p.index), |v| parse_mode(&v, default_mode(p.index)));
+                (p.index, m)
+            })
+            .collect();
+        let columns = game.native_setting("jei", "max_columns").and_then(|v| v.parse().ok()).unwrap_or(9);
+        let rows = game.native_setting("jei", "max_rows").and_then(|v| v.parse().ok()).unwrap_or(16);
         STATE.with_borrow_mut(|s| {
             s.bookmarks = BookmarkList::load(&marks);
             s.cheat = cheat;
+            s.modes = saved;
+            s.columns = i32::clamp(columns, 2, 100);
+            s.rows = i32::clamp(rows, 1, 100);
+            s.dirty = true;
             s.settings_loaded = true;
         });
     }
     let version = PLUGINS.with_borrow(|p| p.version);
-    let needs = STATE.with_borrow(|s| s.data.is_none() || s.plugin_version != version);
+    let needs = STATE.with_borrow(|s| s.data.is_none() || s.plugin_version != version || s.dirty);
     if needs && let Some(d) = game.native_recipes() {
         STATE.with_borrow_mut(|s| load(s, d));
     }
@@ -265,6 +331,9 @@ fn open_recipes(state: &mut State, item: &str, role: Role) {
         return;
     }
     let recipes = state.mgr.recipes(&state.cats[cats[0]].recipe_type, std::slice::from_ref(&focus), false, &|_| true);
+    if let Some(old) = state.view.take() {
+        state.history.push(old);
+    }
     state.view = Some(View { cats, cat: 0, page: 0, recipes, focus });
 }
 
@@ -286,9 +355,10 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
             return;
         }
         let (bw, bh) = (batch.width as i32, batch.height as i32);
+        s.screen = (bw, bh);
         let left = (window[0] + window[2]) as i32 + MARGIN;
         let area = Rect::new(left, NAV_H, bw - left - MARGIN, bh - NAV_H - SEARCH_H - 2 * MARGIN);
-        let bounds = grid::calculate_bounds(&GridConfig::ingredient_list(), area, false);
+        let bounds = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::ingredient_list() }, area, false);
         let search = Rect::new(bounds.x.max(left), bh - SEARCH_H - MARGIN, bounds.w.max(80), SEARCH_H);
         let nav = Rect::new(bounds.x, 2, bounds.w, 16);
         s.places = Places { grid: bounds, nav, search, panel: Rect::EMPTY, marks: Rect::EMPTY };
@@ -313,7 +383,7 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         }
         // The bookmark list, left of the window.
         let marks_area = Rect::new(MARGIN, NAV_H, window[0] as i32 - 2 * MARGIN, bh - NAV_H - 2 * MARGIN);
-        let marks = grid::calculate_bounds(&GridConfig::bookmark_list(), marks_area, false);
+        let marks = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::bookmark_list() }, marks_area, false);
         s.places.marks = marks;
         if !marks.is_empty() {
             let mark_slots = grid::calculate_slots(marks, &[], None, 0);
@@ -344,6 +414,10 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         s.cheat_button = Rect::new(search.x, search.y - 18, text_w(game, cheat_label) + 8, 14);
         game.native_fill(batch, rect_f(s.cheat_button), if s.cheat { 0xFF55AA55 } else { 0xFF555555 });
         game.native_text(batch, cheat_label, [(s.cheat_button.x + 4) as f32, (s.cheat_button.y + 3) as f32], TEXT, false);
+        // The options button and screen.
+        s.options_button = Rect::new(s.cheat_button.x + s.cheat_button.w + 4, s.cheat_button.y, 44, 14);
+        game.native_fill(batch, rect_f(s.options_button), 0xFF555555);
+        game.native_text(batch, "Options", [(s.options_button.x + 4) as f32, (s.options_button.y + 3) as f32], TEXT, false);
         // Tooltip of the hovered stack.
         if s.view.is_none() {
             let hovered = s.hot.iter().find(|(r, _)| r.contains(cx, cy)).map(|(_, id)| id.clone());
@@ -354,7 +428,45 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         if s.view.is_some() {
             draw_view(game, batch, s, cx, cy);
         }
+        if s.options {
+            draw_options(game, batch, s);
+        }
     });
+}
+
+/// The options screen: search modes of the indexes and the grid's largest size.
+fn options_rows(s: &State, bw: i32, bh: i32) -> (Rect, Vec<Rect>) {
+    let w = 200;
+    let h = 14 + (MODE_ROWS.len() as i32 + 2) * 20;
+    let panel = Rect::new((bw - w) / 2, (bh - h) / 2, w, h);
+    let rows = (0..MODE_ROWS.len() as i32 + 2).map(|i| Rect::new(panel.x + 6, panel.y + 8 + i * 20, w - 12, 18)).collect();
+    let _ = s;
+    (panel, rows)
+}
+
+fn draw_options(game: &Game<'_>, batch: &mut HudBatch, s: &State) {
+    let (bw, bh) = (batch.width as i32, batch.height as i32);
+    let (panel, rows) = options_rows(s, bw, bh);
+    game.native_fill(batch, rect_f(panel), BG);
+    game.native_fill(batch, rect_f(Rect::new(panel.x + 1, panel.y + 1, panel.w - 2, panel.h - 2)), 0xFFC6C6C6);
+    for (i, (label, idx)) in MODE_ROWS.iter().enumerate() {
+        let mode = s.modes.iter().find(|(k, _)| k == idx).map_or(SearchMode::Disabled, |(_, m)| *m);
+        game.native_fill(batch, rect_f(rows[i]), 0xFF8B8B8B);
+        game.native_text(batch, &format!("{label}: {}", mode_name(mode)), [(rows[i].x + 4) as f32, (rows[i].y + 5) as f32], TEXT, true);
+    }
+    let n = MODE_ROWS.len();
+    game.native_fill(batch, rect_f(rows[n]), 0xFF8B8B8B);
+    game.native_text(batch, &format!("Max columns: {} (click +1, right -1)", s.columns), [(rows[n].x + 4) as f32, (rows[n].y + 5) as f32], TEXT, true);
+    game.native_fill(batch, rect_f(rows[n + 1]), 0xFF8B8B8B);
+    game.native_text(batch, &format!("Max rows: {} (click +1, right -1)", s.rows), [(rows[n + 1].x + 4) as f32, (rows[n + 1].y + 5) as f32], TEXT, true);
+}
+
+fn game_width(s: &State) -> i32 {
+    s.screen.0
+}
+
+fn game_height(s: &State) -> i32 {
+    s.screen.1
 }
 
 fn name_of(s: &State, id: &str) -> String {
@@ -467,10 +579,46 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
             return;
         }
         let right = button == 1;
+        if s.options {
+            *claimed = true;
+            let (panel, rows) = options_rows(s, game_width(s), game_height(s));
+            if !panel.contains(x, y) {
+                s.options = false;
+                return;
+            }
+            let n = MODE_ROWS.len();
+            for (i, r) in rows.iter().enumerate() {
+                if !r.contains(x, y) {
+                    continue;
+                }
+                if i < n {
+                    let idx = MODE_ROWS[i].1;
+                    if let Some(entry) = s.modes.iter_mut().find(|(k, _)| *k == idx) {
+                        entry.1 = next_mode(entry.1);
+                        let id = PREFIXES.iter().find(|p| p.index == idx).map_or("", |p| p.id);
+                        game.native_set_setting("jei", &format!("search_{id}"), mode_name(entry.1));
+                    }
+                    s.dirty = true;
+                } else if i == n {
+                    s.columns = (s.columns + if right { -1 } else { 1 }).clamp(2, 100);
+                    game.native_set_setting("jei", "max_columns", &s.columns.to_string());
+                } else {
+                    s.rows = (s.rows + if right { -1 } else { 1 }).clamp(1, 100);
+                    game.native_set_setting("jei", "max_rows", &s.rows.to_string());
+                }
+            }
+            return;
+        }
+        if s.options_button.contains(x, y) {
+            s.options = true;
+            *claimed = true;
+            return;
+        }
         if s.view.is_some() {
             let p = s.places.panel;
             if !p.contains(x, y) {
                 s.view = None;
+                s.history.clear();
                 *claimed = true;
                 return;
             }
@@ -577,6 +725,12 @@ pub(super) fn container_key(game: &mut Game<'_>, key: &str, text: Option<&str>, 
             return;
         }
         if !pressed {
+            return;
+        }
+        if key == "key.keyboard.backspace" && s.view.is_some() {
+            // `HistoryList`: Backspace goes back to the earlier recipe view, then closes.
+            s.view = s.history.pop();
+            *claimed = true;
             return;
         }
         if key == "key.keyboard.a" {
