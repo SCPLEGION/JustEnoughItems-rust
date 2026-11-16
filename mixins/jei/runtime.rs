@@ -97,6 +97,11 @@ struct State {
     /// An item pressed in the list and not yet released: (item, right button).
     drag: Option<(String, bool)>,
     anvil_done: bool,
+    /// Hide ingredients mode (`editModeEnabled`, per session) and whether Ctrl is held.
+    edit: bool,
+    ctrl: bool,
+    /// Hidden ingredients (`EditModeConfig`): an ingredient string, or `*` and an item id for all its variants.
+    hidden: Vec<String>,
     dirty: bool,
     screen: (i32, i32),
     options_button: Rect,
@@ -135,6 +140,9 @@ impl State {
             rows: 16,
             drag: None,
             anvil_done: false,
+            edit: false,
+            ctrl: false,
+            hidden: Vec::new(),
             dirty: false,
             screen: (0, 0),
             options_button: Rect::EMPTY,
@@ -419,8 +427,21 @@ fn load(state: &mut State, data: Arc<NativeRecipes>, stacks: Vec<NativeCreativeS
     refilter(state);
 }
 
+/// `IngredientVisibility`: hidden by the player, singly or with all variants of the item (`HideMode.WILDCARD`).
+fn is_hidden(hidden: &[String], ing: &str) -> bool {
+    hidden.iter().any(|h| h == ing || h.strip_prefix('*').is_some_and(|id| split_ingredient(ing).0 == id))
+}
+
+fn save_hidden(game: &Game<'_>, s: &State) {
+    game.native_set_setting("jei", "hidden", &s.hidden.iter().map(|h| format!("{h}\n")).collect::<String>());
+}
+
 fn refilter(state: &mut State) {
     state.results = state.search.query(&state.query);
+    if !state.edit {
+        let (hidden, elements) = (&state.hidden, &state.elements);
+        state.results.retain(|&i| elements.get(i).is_none_or(|e| !is_hidden(hidden, e)));
+    }
     state.page = 0;
 }
 
@@ -428,6 +449,7 @@ fn refilter(state: &mut State) {
 pub(super) fn tick(game: &mut Game<'_>) {
     if STATE.with_borrow(|s| !s.settings_loaded) {
         let marks = game.native_setting("jei", "bookmarks").unwrap_or_default();
+        let hidden: Vec<String> = game.native_setting("jei", "hidden").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
         let cheat = game.native_setting("jei", "cheat_mode").is_some_and(|v| v == "true");
         let saved: Vec<(SearchIndex, SearchMode)> = PREFIXES
             .iter()
@@ -440,6 +462,7 @@ pub(super) fn tick(game: &mut Game<'_>) {
         let rows = game.native_setting("jei", "max_rows").and_then(|v| v.parse().ok()).unwrap_or(16);
         STATE.with_borrow_mut(|s| {
             s.bookmarks = BookmarkList::load(&marks);
+            s.hidden = hidden;
             s.cheat = cheat;
             s.modes = saved;
             s.columns = i32::clamp(columns, 2, 100);
@@ -538,6 +561,10 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
             let Some(item) = s.elements.get(idx) else { continue };
             let a = slot.area;
             draw_ing(game, batch, item, [(a.x + 1) as f32, (a.y + 1) as f32]);
+            if s.edit && is_hidden(&s.hidden, item) {
+                // Hidden ingredients show in hide mode, marked red (`IngredientListSlot.drawHighlight`).
+                game.native_fill(batch, rect_f(Rect::new(a.x + 1, a.y + 1, 16, 16)), 0x80FF0000);
+            }
             if a.contains(cx, cy) {
                 game.native_fill(batch, rect_f(Rect::new(a.x + 1, a.y + 1, 16, 16)), HOVER);
             }
@@ -603,9 +630,9 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
 /// The options screen: search modes of the indexes and the grid's largest size.
 fn options_rows(s: &State, bw: i32, bh: i32) -> (Rect, Vec<Rect>) {
     let w = 200;
-    let h = 14 + (MODE_ROWS.len() as i32 + 2) * 20;
+    let h = 14 + (MODE_ROWS.len() as i32 + 3) * 20;
     let panel = Rect::new((bw - w) / 2, (bh - h) / 2, w, h);
-    let rows = (0..MODE_ROWS.len() as i32 + 2).map(|i| Rect::new(panel.x + 6, panel.y + 8 + i * 20, w - 12, 18)).collect();
+    let rows = (0..MODE_ROWS.len() as i32 + 3).map(|i| Rect::new(panel.x + 6, panel.y + 8 + i * 20, w - 12, 18)).collect();
     let _ = s;
     (panel, rows)
 }
@@ -625,6 +652,8 @@ fn draw_options(game: &Game<'_>, batch: &mut HudBatch, s: &State) {
     game.native_text(batch, &format!("Max columns: {} (click +1, right -1)", s.columns), [(rows[n].x + 4) as f32, (rows[n].y + 5) as f32], TEXT, true);
     game.native_fill(batch, rect_f(rows[n + 1]), 0xFF8B8B8B);
     game.native_text(batch, &format!("Max rows: {} (click +1, right -1)", s.rows), [(rows[n + 1].x + 4) as f32, (rows[n + 1].y + 5) as f32], TEXT, true);
+    game.native_fill(batch, rect_f(rows[n + 2]), 0xFF8B8B8B);
+    game.native_text(batch, &format!("Hide Ingredients Mode: {} (Ctrl+click hides)", if s.edit { "ON" } else { "OFF" }), [(rows[n + 2].x + 4) as f32, (rows[n + 2].y + 5) as f32], TEXT, true);
 }
 
 fn game_width(s: &State) -> i32 {
@@ -782,9 +811,12 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
                 } else if i == n {
                     s.columns = (s.columns + if right { -1 } else { 1 }).clamp(2, 100);
                     game.native_set_setting("jei", "max_columns", &s.columns.to_string());
-                } else {
+                } else if i == n + 1 {
                     s.rows = (s.rows + if right { -1 } else { 1 }).clamp(1, 100);
                     game.native_set_setting("jei", "max_rows", &s.rows.to_string());
+                } else {
+                    s.edit = !s.edit;
+                    refilter(s);
                 }
             }
             return;
@@ -866,7 +898,17 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
             return;
         }
         if let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(x, y)).cloned() {
-            if s.cheat && pl.grid.contains(x, y) {
+            if s.edit && s.ctrl && pl.grid.contains(x, y) {
+                // `key.jei.toggleHideIngredient` (Ctrl+left) and `toggleWildcardHideIngredient` (Ctrl+right).
+                let entry = if right { format!("*{}", split_ingredient(&id).0) } else { id };
+                match s.hidden.iter().position(|h| *h == entry) {
+                    Some(at) => {
+                        s.hidden.remove(at);
+                    }
+                    None => s.hidden.push(entry),
+                }
+                save_hidden(game, s);
+            } else if s.cheat && pl.grid.contains(x, y) {
                 // Cheat mode: left gives a stack, right one (needs creative mode).
                 let _ = game.native_give(&id, if right { 1 } else { 64 });
             } else {
@@ -883,6 +925,9 @@ pub(super) fn container_key(game: &mut Game<'_>, key: &str, text: Option<&str>, 
     STATE.with_borrow_mut(|s| {
         if s.data.is_none() {
             return;
+        }
+        if key.ends_with(".control") || key.ends_with(".super") {
+            s.ctrl = pressed;
         }
         if s.focused {
             *claimed = true;
