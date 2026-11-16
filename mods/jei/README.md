@@ -11,7 +11,7 @@ Recipes: crafting (shaped by the recipe file's pattern), cooking, stonecutting a
 
 Also: bookmarks (A key, saved), options (search modes, grid size, hide mode: Ctrl+click hides), search syntax colours, smelting fuel and composting categories.
 
-Not yet: brewing, anvil, info, smoking and blasting fuel (needs fuel speed), tooltips, variants (needs the creative stacks). Gaps in upstream's API that the
+Not yet: brewing, anvil, info, smoking and blasting fuel (needs fuel speed), variants (needs the creative stacks). Tooltips show name and mod only (the game's full tooltip needs the hovered stack with components). Gaps in upstream's API that the
 fork covered with its own helpers: creative stacks with components and tabs, the hovered stack with components, a ghost
 slot drop into mod screens, the anvil recipe table, fuel speed and fast-cooker fuels.
 
