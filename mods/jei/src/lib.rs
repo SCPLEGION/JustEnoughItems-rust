@@ -419,6 +419,10 @@ impl Hooks for Mod {
             if !s.loaded {
                 load(host, s);
             }
+            if !s.settings_loaded {
+                s.cheat = host.setting("jei", "cheat_mode").is_some_and(|v| v == "true");
+                s.settings_loaded = true;
+            }
             if !s.loaded {
                 return;
             }
