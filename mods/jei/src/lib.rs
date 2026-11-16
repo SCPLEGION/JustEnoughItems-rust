@@ -84,6 +84,7 @@ struct State {
     lookups: LookupHistory,
     lookups_dirty: bool,
     config_dirty: bool,
+    bookmarks_dirty: bool,
     lookup_rects: Vec<(Rect, String)>,
     /// The search indexes as the completion reads them.
     views: Vec<PrefixView>,
@@ -400,6 +401,8 @@ enum Hit {
     TabsPrevious,
     TabsNext,
     Transfer(String),
+    /// The bookmark button of a recipe, with the ingredient it bookmarks.
+    Bookmark(String),
     /// An option button of the left tab: 0 bookmarks first, 1 craftable first.
     SortOption(usize),
 }
@@ -442,7 +445,8 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     let lay0 = layout_of(first.as_ref());
     let border = recipe_gui::RECIPE_BORDER;
     let transfers = |u: &recipes::UiRecipe| !u.id.is_empty() && u.recipe_type == "minecraft:crafting";
-    let buttons = i32::from(first.as_ref().is_some_and(transfers));
+    // Side buttons: the transfer plus (crafting only) and the bookmark (`RecipeBookmarkButton`).
+    let buttons = 1 + i32::from(first.as_ref().is_some_and(transfers));
     let total_w = recipe_gui::total_width(lay0.width, lay0.height, border, buttons);
     let cell_size = (lay0.width + 2 * border, lay0.height + 2 * border);
     let max_columns = s.config.int("recipes", "maxRecipeGuiColumns") as i32;
@@ -580,6 +584,13 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
             ui::plus(draw, rect);
             s.hits.push((rect, Hit::Transfer(u.id.clone())));
         }
+        // The bookmark button bookmarks the recipe's output (`bookmarkOutputAsRecipe` is not stored per recipe yet).
+        if let Some(out) = u.outputs.first().or_else(|| u.inputs.first().and_then(|i| i.first())) {
+            let b = recipe_gui::side_button(lay.width, lay.height, border, i32::from(transfers(&u)));
+            let rect = Rect::new(origin.0 + b.x, origin.1 + b.y, b.w, b.h);
+            ui::bookmark(draw, rect, s.bookmarks.contains(out), rect.contains(cx, cy));
+            s.hits.push((rect, Hit::Bookmark(out.clone())));
+        }
     }
     hot.extend(station_hot);
     s.hot = hot;
@@ -611,6 +622,10 @@ fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
                 s.pending_transfer = Some((id, right));
                 s.view = None;
                 s.history.clear();
+            }
+            Hit::Bookmark(id) => {
+                s.bookmarks.toggle(&id);
+                s.bookmarks_dirty = true;
             }
             Hit::Tab(i) => select_category(s, i),
             Hit::SortOption(i) => {
@@ -924,6 +939,9 @@ impl Hooks for Mod {
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
         let (give, transfer) = STATE.with_borrow_mut(|s| (s.give.take(), s.pending_transfer.take()));
         STATE.with_borrow_mut(|s| {
+            if std::mem::take(&mut s.bookmarks_dirty) {
+                host.set_setting("jei", "bookmarks", &s.bookmarks.save());
+            }
             if std::mem::take(&mut s.config_dirty) {
                 host.set_setting("jei", "config", &s.config.serialize());
             }
