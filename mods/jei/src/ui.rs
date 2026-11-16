@@ -234,3 +234,17 @@ pub fn icon_button(draw: &mut dyn DrawContext, r: Rect, icon: &str, on: bool, ho
         button_fill(draw, r, hovered || on);
     }
 }
+
+/// The bookmark side button of a recipe: a button with `recipe_bookmark` (9 by 9), pressed while bookmarked.
+pub fn bookmark(draw: &mut dyn DrawContext, r: Rect, on: bool, hovered: bool) {
+    if have(draw) {
+        draw.gui_nine_slice(&name(if on { "button_pressed_v2" } else { "button_enabled_v2" }), f(r), 0xFFFFFFFF);
+        blit(draw, "icons/recipe_bookmark", r.x + (r.w - 9) / 2, r.y + (r.h - 9) / 2, 9, 9);
+        if hovered {
+            draw.gui_nine_slice(&name(if on { "button_pressed_highlight_v2" } else { "button_highlight_v2" }), f(r), 0xFFFFFFFF);
+        }
+    } else {
+        button_fill(draw, r, hovered || on);
+        fill(draw, r.x + r.w / 2 - 2, r.y + 3, 4, r.h - 6, if on { 0xFFFFD83A } else { 0xFFFFFFFF });
+    }
+}
