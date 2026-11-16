@@ -1,0 +1,8 @@
+id = "jei"
+name = "Just Enough Items"
+version = "0.1.0"
+description = "JEI for Horizon: an ingredient list with search, bookmarks and recipe lookups."
+authors = []
+api = "0.2"
+side = "client"
+capabilities = []

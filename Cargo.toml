@@ -5,4 +5,5 @@
 # `jei-core` (JEI's logic, no Horizon dependency, tested on its own).
 [workspace]
 members = ["mixins/jei/core"]
+exclude = ["mods/jei"]
 resolver = "2"
