@@ -30,10 +30,9 @@ has been run in game yet; everything is type-checked against the fork's `horizon
 ## Open, from the audit against the Java source
 
 Config options in `OPTIONS` that nothing reads yet (wire each, then delete from this list):
-`toastReflowEnabled`, `compactInventoryEffects`, `hideIngredientsWhenNotSearching`, `maxColumns`/`maxRows`
-(grid size), `bookmarkOutputAsRecipe`, `dragToRearrangeBookmarksEnabled`, `bookmarkTooltip*`, `guiResizeEnabled`,
+`toastReflowEnabled`, `compactInventoryEffects`, `bookmarkOutputAsRecipe`, `dragToRearrangeBookmarksEnabled`, `bookmarkTooltip*`, `guiResizeEnabled`,
 `dragDelayInMilliseconds`, `smoothScrolling*`, `showTagRecipesEnabled`,
-`enableRecipesGuiIngredientsSummary`, `showCreativeTabNamesEnabled`, `tagContentTooltip*`, `lookupFluidContentsEnabled`,
+`enableRecipesGuiIngredientsSummary`, `tagContentTooltip*`, `lookupFluidContentsEnabled`,
 `lookupBlockTagsEnabled`, lookup history `displaySide`, `giveMode`,
 `cheatToHotbarUsingHotkeysEnabled`, `showHiddenIngredients`, `recipeSyncWarningEnabled`.
 Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredientSortStages`, `bookmarkAddPosition`,

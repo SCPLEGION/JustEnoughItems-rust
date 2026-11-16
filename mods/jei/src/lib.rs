@@ -239,11 +239,14 @@ fn options_click(host: &dyn ClientHost, s: &mut State, x: i32, y: i32, right: bo
             build_search(s);
             refilter(s);
         } else if i == n {
-            s.columns = (s.columns + if right { -1 } else { 1 }).clamp(2, 100);
-            host.set_setting("jei", "max_columns", &s.columns.to_string());
+            // `ingredientList.maxColumns` (4 to 100): the config is the one place it lives.
+            s.columns = (s.columns + if right { -1 } else { 1 }).clamp(4, 100);
+            s.config.set("ingredientList", "maxColumns", &s.columns.to_string());
+            host.set_setting("jei", "config", &s.config.serialize());
         } else if i == n + 1 {
             s.rows = (s.rows + if right { -1 } else { 1 }).clamp(1, 100);
-            host.set_setting("jei", "max_rows", &s.rows.to_string());
+            s.config.set("ingredientList", "maxRows", &s.rows.to_string());
+            host.set_setting("jei", "config", &s.config.serialize());
         } else if i == n + 3 {
             let on = !s.config.bool("search", "searchCompletionEnabled");
             s.config.set("search", "searchCompletionEnabled", if on { "true" } else { "false" });
@@ -719,9 +722,9 @@ impl Hooks for Mod {
                     .iter()
                     .map(|p| (p.index, host.setting("jei", &format!("search_{}", p.id)).map_or(default_mode(p.index), |v| parse_mode(&v, default_mode(p.index)))))
                     .collect();
-                s.columns = host.setting("jei", "max_columns").and_then(|v| v.parse().ok()).unwrap_or(9).clamp(2, 100);
-                s.rows = host.setting("jei", "max_rows").and_then(|v| v.parse().ok()).unwrap_or(16).clamp(1, 100);
                 s.config = Config::parse(&host.setting("jei", "config").unwrap_or_default());
+                s.columns = s.config.int("ingredientList", "maxColumns") as i32;
+                s.rows = s.config.int("ingredientList", "maxRows") as i32;
                 s.lookups = LookupHistory::load(&host.setting("jei", "lookups").unwrap_or_default(), s.config.int("lookups", "maxIngredients") as usize);
                 s.settings_loaded = true;
             }
@@ -762,10 +765,15 @@ impl Hooks for Mod {
             let first = grid::first_item_index_for_valid_page(s.page * per_page, s.results.len() as i32, per_page);
             s.page = if per_page == 0 { 0 } else { first / per_page };
             let mut hot = Vec::new();
+            // `hideIngredientsWhenNotSearching`: an empty, unfocused search shows no ingredients.
+            let hide_when_idle = s.config.bool("ingredientList", "hideIngredientsWhenNotSearching") && s.query.is_empty() && !s.focused;
             for slot in &slots {
                 ui::slot(draw, slot.area);
             }
             for (n, slot) in slots.iter().enumerate() {
+                if hide_when_idle {
+                    break;
+                }
                 let Some(&idx) = s.results.get(first as usize + n) else { break };
                 let a = slot.area;
                 draw.item(s.keys[idx], [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
@@ -866,6 +874,9 @@ impl Hooks for Mod {
                 let ns = id.split_once(':').map_or("minecraft", |p| p.0);
                 let mut lines = vec![Text::literal(name)];
                 lines.extend(s.infos[k].data.tooltip.iter().map(|l| Text::literal(l.clone())));
+                if s.config.bool("tooltips", "showCreativeTabNamesEnabled") {
+                    lines.extend(s.infos[k].data.creative_tabs.iter().map(|tab| Text::literal(tab.clone())));
+                }
                 lines.push(Text::literal(mod_name(ns)));
                 let _ = draw.gui_tooltip(&lines, [cx as f32, cy as f32]);
             }
