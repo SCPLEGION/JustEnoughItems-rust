@@ -63,6 +63,10 @@ struct State {
     columns: i32,
     rows: i32,
     marks: Rect,
+    /// The "+" of the recipe shown: its rect and the recipe id.
+    transfer: Option<(Rect, String)>,
+    /// A transfer the click asked for (recipe, all sets), done in the next client tick.
+    pending_transfer: Option<(String, bool)>,
     screen_size: [i32; 2],
 }
 
@@ -348,6 +352,14 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
             }
         }
     }
+    s.transfer = None;
+    if let Some(u) = v.recipes.get(v.page).and_then(|id| r.ui.get(*id as usize)).filter(|u| !u.id.is_empty() && u.recipe_type == "minecraft:crafting") {
+        // Recipe transfer (`+`): the recipe's ingredients go into the open crafting grid.
+        let b = Rect::new(origin.0 + lay.width - 13, origin.1 + lay.height - 13, 13, 13);
+        draw.fill(rect_f(b), if b.contains(cx, cy) { 0xFF55FF55 } else { 0xFF339933 });
+        draw.text("+", [(b.x + 4) as f32, (b.y + 3) as f32], TEXT, true);
+        s.transfer = Some((b, u.id.clone()));
+    }
     let label = format!("{}/{}", v.page + 1, v.recipes.len().max(1));
     let lw = draw.text_width(&label) as i32;
     draw.text("<", [(panel.x + 8) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
@@ -363,6 +375,15 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
 fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
     let p = s.panel;
     if !p.contains(x, y) {
+        s.view = None;
+        s.history.clear();
+        return true;
+    }
+    if let Some((b, id)) = s.transfer.clone()
+        && b.contains(x, y)
+    {
+        // Left places the recipe once, right as many as the items allow (JEI: Shift).
+        s.pending_transfer = Some((id, right));
         s.view = None;
         s.history.clear();
         return true;
@@ -622,8 +643,12 @@ impl Hooks for Mod {
     }
 
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
-        if let Some((item, count)) = STATE.with_borrow_mut(|s| s.give.take()) {
+        let (give, transfer) = STATE.with_borrow_mut(|s| (s.give.take(), s.pending_transfer.take()));
+        if let Some((item, count)) = give {
             let _ = host.give(item, count);
+        }
+        if let Some((id, all)) = transfer {
+            host.transfer_recipe_id(&id, all);
         }
     }
 
