@@ -6,7 +6,7 @@ pub use crate::jei_core::{
     view::{self, Layout},
 };
 use crate::jei_core::plugin::Registry;
-use mod_api::{ClientHost, DrawContext};
+use mod_api::{ClientHost, DrawContext, ScreenView};
 use std::sync::Mutex;
 
 /// An ingredient type beyond items (`IIngredientType`, `IIngredientHelper`, `IIngredientRenderer`): fluids are one, and a
@@ -25,6 +25,32 @@ pub struct IngredientType {
 }
 
 static TYPES: Mutex<Vec<IngredientType>> = Mutex::new(Vec::new());
+
+/// A place on a mod's own screen that takes a dragged ingredient (`IGhostIngredientHandler`): a filter slot, say.
+/// While the player drags an ingredient out of the list over `screen`, `targets` says where it can be dropped (GUI
+/// pixels, x0 y0 x1 y1) and a release over one calls `accept`, which must queue the change itself.
+#[derive(Clone)]
+pub struct GhostTarget {
+    /// The screen's id (`ScreenView::id`); JEI draws its list over it from then on.
+    pub screen: &'static str,
+    pub targets: fn(&ScreenView<'_>, ingredient: &str) -> Vec<[i32; 4]>,
+    /// Called with the mouse position of the release and the target's index; true when it took the ingredient.
+    pub accept: fn(&ScreenView<'_>, target: usize, ingredient: &str) -> bool,
+}
+
+static GHOSTS: Mutex<Vec<GhostTarget>> = Mutex::new(Vec::new());
+
+/// Registers the drop targets of a screen; a screen id registered twice keeps the first.
+pub fn register_ghost_target(target: GhostTarget) {
+    let mut ghosts = GHOSTS.lock().unwrap_or_else(|e| e.into_inner());
+    if !ghosts.iter().any(|g| g.screen == target.screen) {
+        ghosts.push(target);
+    }
+}
+
+pub(crate) fn ghost_target(screen: &str) -> Option<GhostTarget> {
+    GHOSTS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|g| g.screen == screen).cloned()
+}
 
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry { categories: Vec::new(), recipes: Vec::new(), version: 0 });
 
@@ -90,5 +116,18 @@ mod tests {
         assert!(version() > before);
         let snap = snapshot();
         assert!(snap.categories.iter().any(|c| c.recipe_type == "apitest:crusher" && c.stations == ["minecraft:stone", "minecraft:furnace"]));
+    }
+
+    #[test]
+    fn ghost_targets_register_once_per_screen() {
+        fn none(_: &ScreenView<'_>, _: &str) -> Vec<[i32; 4]> {
+            Vec::new()
+        }
+        fn take(_: &ScreenView<'_>, _: usize, _: &str) -> bool {
+            true
+        }
+        assert!(ghost_target("apitest:filter").is_none());
+        register_ghost_target(GhostTarget { screen: "apitest:filter", targets: none, accept: take });
+        assert!(ghost_target("apitest:filter").is_some());
     }
 }

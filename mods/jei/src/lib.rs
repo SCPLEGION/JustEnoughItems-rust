@@ -92,6 +92,8 @@ struct State {
     lookups: LookupHistory,
     search_history: SearchHistory,
     bookmarks_hidden: bool,
+    /// A press on a list ingredient that is not yet a click or a drag.
+    drag: Option<Drag>,
     ticks: u32,
     /// Item ids in the player's inventory, refreshed each second, for `recipeSortingCraftable`.
     inventory: std::collections::HashSet<String>,
@@ -296,7 +298,7 @@ thread_local! {
 /// The screens the list shows over: the inventory screen draws every container, and the creative one.
 fn shows_over(screen: &ScreenView<'_>) -> bool {
     // `overlaysEnabled`: off hides the whole list.
-    matches!(screen.id, "inventory" | "creative") && STATE.with(|c| c.try_borrow().is_ok_and(|s| s.config.bool("ingredientList", "overlaysEnabled")))
+    (matches!(screen.id, "inventory" | "creative") || api::ghost_target(screen.id).is_some()) && STATE.with(|c| c.try_borrow().is_ok_and(|s| s.config.bool("ingredientList", "overlaysEnabled")))
 }
 
 fn mod_name(namespace: &str) -> String {
@@ -807,6 +809,15 @@ fn rect_f(r: Rect) -> [f32; 4] {
     [r.x as f32, r.y as f32, r.w as f32, r.h as f32]
 }
 
+/// An ingredient pressed in the list: a click if released at once, a ghost drag once it moved or waited `dragDelay`.
+#[derive(Clone, Debug)]
+struct Drag {
+    idx: usize,
+    right: bool,
+    from: [f32; 2],
+    since: Instant,
+}
+
 #[derive(Default)]
 struct Mod;
 
@@ -993,6 +1004,18 @@ impl Hooks for Mod {
                 draw_options(s, draw);
             }
             draw_view(s, draw, screen);
+            // A ghost drag: the screen's targets light up and the ingredient follows the cursor (`GhostIngredientDragManager`).
+            if let Some(drag) = s.drag.clone()
+                && drag.since.elapsed().as_millis() >= s.config.int("input", "dragDelayInMilliseconds") as u128
+                && let Some(g) = api::ghost_target(screen.id)
+            {
+                let id = s.ids[drag.idx].clone();
+                for t in (g.targets)(screen, &id) {
+                    let over = cx >= t[0] && cx < t[2] && cy >= t[1] && cy < t[3];
+                    draw.fill([t[0] as f32, t[1] as f32, (t[2] - t[0]) as f32, (t[3] - t[1]) as f32], if over { 0x9000FF00 } else { 0x4000FF00 });
+                }
+                draw_ing(s, draw, &id, [(cx - 8) as f32, (cy - 8) as f32]);
+            }
             // The tooltip of the ingredient under the cursor: its name and the mod it is from.
             if !s.options
                 && let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(cx, cy))
@@ -1098,20 +1121,39 @@ impl Hooks for Mod {
                 if slot.area.contains(x, y)
                     && let Some(&idx) = s.results.get(first as usize + n)
                 {
-                    if s.cheat {
-                        // Cheat mode: left gives a stack, right one (needs creative mode).
-                        // Only items can be given; a fluid has no stack.
-                        s.give = s.keys[idx].map(|k| (k, if right { 1 } else { 64 }));
-                    } else {
-                        // Left: how it is made; right: what it is used in.
-                        let id = s.ids[idx].clone();
-                        open_recipes(s, &id, if right { Role::Input } else { Role::Output });
-                    }
+                    // The click happens on release; a drag out of the slot is a ghost drag instead.
+                    s.drag = Some(Drag { idx, right, from: event.screen.mouse, since: Instant::now() });
                     claimed = true;
                 }
             }
         });
         if claimed { Flow::Cancel } else { Flow::Continue }
+    }
+
+    fn screen_mouse_button_released_pre(&self, _: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonReleasedPreEvent<'_>) -> Flow {
+        let Some(drag) = STATE.with_borrow_mut(|s| s.drag.take()) else { return Flow::Continue };
+        let mouse = event.screen.mouse;
+        STATE.with_borrow_mut(|s| {
+            let moved = (mouse[0] - drag.from[0]).hypot(mouse[1] - drag.from[1]) > 3.0;
+            let delay = s.config.int("input", "dragDelayInMilliseconds") as u128;
+            let id = s.ids[drag.idx].clone();
+            if moved && drag.since.elapsed().as_millis() >= delay {
+                // A ghost drop: the screen's registered handler takes the ingredient if it is over a target.
+                if let Some(g) = api::ghost_target(event.screen.id) {
+                    let (x, y) = (mouse[0] as i32, mouse[1] as i32);
+                    if let Some(i) = (g.targets)(event.screen, &id).iter().position(|t| x >= t[0] && x < t[2] && y >= t[1] && y < t[3]) {
+                        (g.accept)(event.screen, i, &id);
+                    }
+                }
+            } else if s.cheat {
+                // Cheat mode: left gives a stack, right one (needs creative mode). Only items can be given.
+                s.give = s.keys[drag.idx].map(|k| (k, if drag.right { 1 } else { 64 }));
+            } else {
+                // Left: how it is made; right: what it is used in.
+                open_recipes(s, &id, if drag.right { Role::Input } else { Role::Output });
+            }
+        });
+        Flow::Cancel
     }
 
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {

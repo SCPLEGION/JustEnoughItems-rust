@@ -52,8 +52,9 @@ Screens and behaviour:
    (the text is under it now).
 4. **Recipe bookmarks**: bookmarks store ingredients only; `bookmarkOutputAsRecipe` and the bookmark list's recipe
    entries, tooltip preview, drag to rearrange, transfer keys.
-5. **Ghost ingredient drag** into mod screens: needs `screen_drop` and `screen_item_dropped_pre` on the fork
-   (postponed until Mekanism resumes).
+5. **Ghost ingredient drag** is in (`jei::api::register_ghost_target`: a screen id, the drop rectangles for an ingredient and an
+   accept callback; JEI draws its list over that screen). Not ported: drag to rearrange bookmarks, dropping onto the
+   ingredient list itself, and the exact fade of Java's highlight.
 6. **Recipe screen**: GUI resize handles (`guiResizeEnabled`), `recipeGuiHeight/Width`, ingredient summary, focus
    highlight of the focused ingredient, the recipe-id copy and "recipe source" tooltips, scroll smoothing.
 7. **Ingredient types beyond items**: fluids are an `api::IngredientType` (`fluid:` ids, drawn with `DrawContext::fluid`) and other
