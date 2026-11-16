@@ -8,6 +8,8 @@ pub enum Kind {
     Bool(bool),
     Int { default: i64, min: i64, max: i64 },
     Enum { default: &'static str, values: &'static [&'static str] },
+    /// A list of enum names, written `["A", "B"]`; only names of `values` are kept, in order.
+    List { default: &'static str, values: &'static [&'static str] },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -23,6 +25,9 @@ const fn b(section: &'static str, name: &'static str, default: bool) -> Opt {
 const fn i(section: &'static str, name: &'static str, default: i64, min: i64, max: i64) -> Opt {
     Opt { section, name, kind: Kind::Int { default, min, max } }
 }
+const fn l(section: &'static str, name: &'static str, default: &'static str, values: &'static [&'static str]) -> Opt {
+    Opt { section, name, kind: Kind::List { default, values } }
+}
 const fn e(section: &'static str, name: &'static str, default: &'static str, values: &'static [&'static str]) -> Opt {
     Opt { section, name, kind: Kind::Enum { default, values } }
 }
@@ -32,6 +37,7 @@ pub const OPTIONS: &[Opt] = &[
     b("search", "searchCompletionEnabled", false),
     i("search", "maxSearchCompletionRows", 5, 1, 100),
     b("ingredientList", "overlaysEnabled", true),
+    l("ingredientList", "ingredientSortStages", "MOD_NAME,INGREDIENT_TYPE,CREATIVE_MENU", &["MOD_NAME", "INGREDIENT_TYPE", "ALPHABETICAL", "CREATIVE_MENU", "TAG", "ARMOR", "MAX_DURABILITY"]),
     b("ingredientList", "toastReflowEnabled", true),
     b("ingredientList", "compactInventoryEffects", true),
     b("ingredientList", "hideIngredientsWhenNotSearching", false),
@@ -90,6 +96,12 @@ fn normalize(kind: Kind, raw: &str) -> Option<String> {
             let v = raw.trim_matches('"');
             values.contains(&v).then(|| v.to_owned())
         }
+        Kind::List { values, .. } => {
+            // `["A", "B"]` or `A,B`, stored as `A,B`.
+            let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
+            let names: Vec<&str> = inner.split(',').map(|n| n.trim().trim_matches('"')).filter(|n| values.contains(n)).collect();
+            Some(names.join(","))
+        }
     }
 }
 
@@ -117,7 +129,7 @@ impl Config {
         self.values.get(&(section.to_owned(), name.to_owned())).cloned().unwrap_or_else(|| match opt.kind {
             Kind::Bool(d) => d.to_string(),
             Kind::Int { default, .. } => default.to_string(),
-            Kind::Enum { default, .. } => default.to_owned(),
+            Kind::Enum { default, .. } | Kind::List { default, .. } => default.to_owned(),
         })
     }
     pub fn bool(&self, section: &str, name: &str) -> bool {
@@ -128,6 +140,10 @@ impl Config {
     }
     pub fn text(&self, section: &str, name: &str) -> String {
         self.raw(section, name)
+    }
+    /// A list option's names, in order.
+    pub fn list(&self, section: &str, name: &str) -> Vec<String> {
+        self.raw(section, name).split(',').filter(|n| !n.is_empty()).map(str::to_owned).collect()
     }
     /// Sets an option; false when the value is not valid for it (nothing changes).
     pub fn set(&mut self, section: &str, name: &str, value: &str) -> bool {
@@ -155,6 +171,10 @@ impl Config {
             let v = self.raw(o.section, o.name);
             match o.kind {
                 Kind::Enum { .. } => out.push_str(&format!("{} = \"{v}\"\n", o.name)),
+                Kind::List { .. } => {
+                    let items: Vec<String> = v.split(',').filter(|n| !n.is_empty()).map(|n| format!("\"{n}\"")).collect();
+                    out.push_str(&format!("{} = [{}]\n", o.name, items.join(", ")));
+                }
                 _ => out.push_str(&format!("{} = {v}\n", o.name)),
             }
         }
@@ -194,6 +214,14 @@ mod tests {
         assert_eq!(back.int("input", "smoothScrollRate"), 20);
         assert_eq!(back.text("recipes", "navigationMode"), "SCROLLED");
         assert_eq!(back, Config::parse(&back.serialize()));
+    }
+
+    #[test]
+    fn list_options_keep_known_names_in_order() {
+        let c = Config::parse("[ingredientList]\ningredientSortStages = [\"ALPHABETICAL\", \"NOPE\", \"MOD_NAME\"]\n");
+        assert_eq!(c.list("ingredientList", "ingredientSortStages"), ["ALPHABETICAL", "MOD_NAME"]);
+        assert!(c.serialize().contains("ingredientSortStages = [\"ALPHABETICAL\", \"MOD_NAME\"]"));
+        assert_eq!(Config::default().list("ingredientList", "ingredientSortStages"), ["MOD_NAME", "INGREDIENT_TYPE", "CREATIVE_MENU"]);
     }
 
     #[test]
