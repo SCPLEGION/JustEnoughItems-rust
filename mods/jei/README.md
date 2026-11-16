@@ -7,9 +7,15 @@ one has everything.
 Done: the ingredient list over the inventory and creative screens (registry items, search with JEI's tokenizer, prefixes
 and modes, paging by click or wheel), a search box that takes typing, cheat give.
 
-Not yet: recipes (`recipes_of_type`), bookmarks, options, tooltips, hide mode, categories. Gaps in upstream's API that the
+Recipes: crafting (shaped by the recipe file's pattern), cooking, stonecutting and smithing from `recipes_of_type`, with a view (tabs, paging, R/U keys, click an ingredient, Backspace history) and a Cheat button.
+
+Not yet: brewing, anvil, fuel, compost, info, bookmarks, options, tooltips, hide mode. Gaps in upstream's API that the
 fork covered with its own helpers: creative stacks with components and tabs, the hovered stack with components, a ghost
 slot drop into mod screens, the anvil recipe table, fuel speed and fast-cooker fuels.
 
 Type-check without a game: point `horizon-mod-api` in `Cargo.toml` at a clone of upstream's `crates/horizon-mod-api`
 and run `cargo check --lib`.
+
+Pin: `[native] horizon` names upstream main at the time of writing. The launcher also wants `mixins` (a horizon-mixins
+commit) for a build; it is not set here, so the mod has not been built by the launcher. Only `cargo check --lib` against
+upstream's `horizon-mod-api` has run.
