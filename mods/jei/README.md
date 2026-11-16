@@ -21,3 +21,13 @@ and run `cargo check --lib`.
 Pin: `[native] horizon` names upstream main at the time of writing. The launcher also wants `mixins` (a horizon-mixins
 commit) for a build; it is not set here, so the mod has not been built by the launcher. Only `cargo check --lib` against
 upstream's `horizon-mod-api` has run.
+
+## Plugin API (other mods)
+
+Another mod lists `jei` under `[dependencies]` in its `horizon-mod.toml` and calls `jei::api::register_category`,
+`add_catalyst` and `add_recipe` (with `jei::api::{CategoryDef, CustomRecipe, Layout, view}`) from its own hooks, for
+example in `client_tick_post`. The viewer rebuilds its recipes when the registry changes. Guard calls with
+`mod_api::if_installed!(host, jei, { .. })` when JEI is optional.
+
+Tests: `cargo test --lib` in a copy with the SDK path pointed at upstream's `horizon-mod-api` (9 tests: plugin
+registry, search modes, hide mode, completion, history).
