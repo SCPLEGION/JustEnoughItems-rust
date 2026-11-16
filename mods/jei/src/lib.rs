@@ -3,6 +3,8 @@ use jei_core::{
     grid::{self, GridConfig, Rect},
     recipes::{Focus, RecipeId, Role},
     view::SlotRole,
+    bookmarks::BookmarkList,
+    highlight,
     ingredient::{FilterConfig, IngredientData, ListElementInfo},
     prefix::{default_mode, SearchIndex, SearchMode, PREFIXES},
     search::ElementSearch,
@@ -50,6 +52,141 @@ struct State {
     cheat: bool,
     cheat_button: Rect,
     settings_loaded: bool,
+    bookmarks: BookmarkList,
+    /// Hidden ingredients (`EditModeConfig`): an item id, or `*` and an id for the item's variants.
+    hidden: Vec<String>,
+    /// Hide ingredients mode (per session).
+    edit: bool,
+    modes: Vec<(SearchIndex, SearchMode)>,
+    options: bool,
+    options_button: Rect,
+    columns: i32,
+    rows: i32,
+    marks: Rect,
+    screen_size: [i32; 2],
+}
+
+/// The option rows of the options screen.
+const MODE_ROWS: [(&str, SearchIndex); 5] = [
+    ("Mod name search", SearchIndex::ModNames),
+    ("Tag search", SearchIndex::Tags),
+    ("Tooltip search", SearchIndex::Tooltips),
+    ("Color search", SearchIndex::Colors),
+    ("Creative tab search", SearchIndex::CreativeTabs),
+];
+
+fn parse_mode(v: &str, default: SearchMode) -> SearchMode {
+    match v {
+        "ENABLED" => SearchMode::Enabled,
+        "REQUIRE_PREFIX" => SearchMode::RequireManualPrefix,
+        "DISABLED" => SearchMode::Disabled,
+        _ => default,
+    }
+}
+
+fn mode_name(m: SearchMode) -> &'static str {
+    match m {
+        SearchMode::Enabled => "ENABLED",
+        SearchMode::RequireManualPrefix => "REQUIRE_PREFIX",
+        SearchMode::Disabled => "DISABLED",
+    }
+}
+
+fn next_mode(m: SearchMode) -> SearchMode {
+    match m {
+        SearchMode::Enabled => SearchMode::RequireManualPrefix,
+        SearchMode::RequireManualPrefix => SearchMode::Disabled,
+        SearchMode::Disabled => SearchMode::Enabled,
+    }
+}
+
+/// `IngredientVisibility`: hidden by the player, singly or with all variants of the item (`HideMode.WILDCARD`).
+fn is_hidden(hidden: &[String], id: &str) -> bool {
+    hidden.iter().any(|h| h == id || h.strip_prefix('*').is_some_and(|w| w == id))
+}
+
+fn lines(text: Option<String>) -> Vec<String> {
+    text.unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect()
+}
+
+fn save_lines(host: &dyn ClientHost, key: &str, list: &[String]) {
+    host.set_setting("jei", key, &list.iter().map(|l| format!("{l}\n")).collect::<String>());
+}
+
+/// The index over the elements, with the modes now set.
+fn build_search(s: &mut State) {
+    let cfg = FilterConfig::default();
+    let modes = s.modes.clone();
+    let mut search = ElementSearch::new(|i| modes.iter().find(|(k, _)| *k == i).map_or(SearchMode::Disabled, |(_, m)| *m));
+    for (i, info) in s.infos.iter().enumerate() {
+        search.add(i, |idx: SearchIndex| info.strings(idx, &cfg));
+    }
+    s.search = Some(search);
+}
+
+fn options_rows(s: &State, bw: i32, bh: i32) -> (Rect, Vec<Rect>) {
+    let w = 200;
+    let n = MODE_ROWS.len() as i32 + 3;
+    let h = 14 + n * 20;
+    let panel = Rect::new((bw - w) / 2, (bh - h) / 2, w, h);
+    let _ = s;
+    (panel, (0..n).map(|i| Rect::new(panel.x + 6, panel.y + 8 + i * 20, w - 12, 18)).collect())
+}
+
+fn draw_options(s: &State, draw: &mut dyn DrawContext) {
+    let [bw, bh] = draw.size();
+    let (panel, rows) = options_rows(s, bw as i32, bh as i32);
+    draw.fill(rect_f(panel), BG);
+    draw.fill(rect_f(Rect::new(panel.x + 1, panel.y + 1, panel.w - 2, panel.h - 2)), 0xFFC6C6C6);
+    let n = MODE_ROWS.len();
+    for (i, r) in rows.iter().enumerate() {
+        draw.fill(rect_f(*r), SLOT_BG);
+        let label = if i < n {
+            let mode = s.modes.iter().find(|(k, _)| *k == MODE_ROWS[i].1).map_or(SearchMode::Disabled, |(_, m)| *m);
+            format!("{}: {}", MODE_ROWS[i].0, mode_name(mode))
+        } else if i == n {
+            format!("Max columns: {} (click +1, right -1)", s.columns)
+        } else if i == n + 1 {
+            format!("Max rows: {} (click +1, right -1)", s.rows)
+        } else {
+            format!("Hide Ingredients Mode: {} (Ctrl+click hides)", if s.edit { "ON" } else { "OFF" })
+        };
+        draw.text(&label, [(r.x + 4) as f32, (r.y + 5) as f32], TEXT, true);
+    }
+}
+
+fn options_click(host: &dyn ClientHost, s: &mut State, x: i32, y: i32, right: bool) {
+    let [bw, bh] = s.screen_size;
+    let (panel, rows) = options_rows(s, bw, bh);
+    if !panel.contains(x, y) {
+        s.options = false;
+        return;
+    }
+    let n = MODE_ROWS.len();
+    for (i, r) in rows.iter().enumerate() {
+        if !r.contains(x, y) {
+            continue;
+        }
+        if i < n {
+            let idx = MODE_ROWS[i].1;
+            if let Some(entry) = s.modes.iter_mut().find(|(k, _)| *k == idx) {
+                entry.1 = next_mode(entry.1);
+                let id = PREFIXES.iter().find(|p| p.index == idx).map_or("", |p| p.id);
+                host.set_setting("jei", &format!("search_{id}"), mode_name(entry.1));
+            }
+            build_search(s);
+            refilter(s);
+        } else if i == n {
+            s.columns = (s.columns + if right { -1 } else { 1 }).clamp(2, 100);
+            host.set_setting("jei", "max_columns", &s.columns.to_string());
+        } else if i == n + 1 {
+            s.rows = (s.rows + if right { -1 } else { 1 }).clamp(1, 100);
+            host.set_setting("jei", "max_rows", &s.rows.to_string());
+        } else {
+            s.edit = !s.edit;
+            refilter(s);
+        }
+    }
 }
 
 /// An open recipe view: the categories with recipes for the focus, the one shown, and its recipes (`RecipesGui`).
@@ -89,7 +226,6 @@ fn mod_name(namespace: &str) -> String {
 fn load(host: &dyn ClientHost, s: &mut State) {
     let Some(entries) = host.registry_entries("minecraft:item") else { return };
     let cfg = FilterConfig::default();
-    let mut search = ElementSearch::new(|i| default_mode(i));
     let mut names: HashMap<ItemKey, String> = HashMap::new();
     for id in entries {
         let Some(key) = host.item_key(&id) else { continue };
@@ -107,23 +243,25 @@ fn load(host: &dyn ClientHost, s: &mut State) {
             ..Default::default()
         };
         let i = s.infos.len();
-        let info = ListElementInfo::new(data, &cfg, i);
-        search.add(i, |idx: SearchIndex| info.strings(idx, &cfg));
-        s.infos.push(info);
+        s.infos.push(ListElementInfo::new(data, &cfg, i));
         s.keys.push(key);
         s.index.insert(id.clone(), s.keys.len() - 1);
         names.insert(key, id.clone());
         s.ids.push(id);
     }
     s.recipes = Some(recipes::load(host, &names));
-    s.results = search.query("");
-    s.search = Some(search);
+    build_search(s);
     s.loaded = true;
+    refilter(s);
 }
 
 fn refilter(s: &mut State) {
     if let Some(search) = &s.search {
         s.results = search.query(&s.query);
+    }
+    if !s.edit {
+        let (hidden, ids) = (&s.hidden, &s.ids);
+        s.results.retain(|&i| ids.get(i).is_none_or(|id| !is_hidden(hidden, id)));
     }
     s.page = 0;
 }
@@ -215,6 +353,9 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     draw.text("<", [(panel.x + 8) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
     draw.text(">", [(panel.x + pw - 14) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
     draw.text(&label, [(panel.x + (pw - lw) / 2) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
+    if let Some(u) = v.recipes.get(v.page).and_then(|id| r.ui.get(*id as usize)).filter(|u| !u.note.is_empty()) {
+        draw.text(&u.note, [(origin.0 + (lay.width - draw.text_width(&u.note) as i32) / 2) as f32, (origin.1 + lay.height + 4) as f32], 0xFF404040, false);
+    }
     s.hot = hot;
 }
 
@@ -263,21 +404,30 @@ impl Hooks for Mod {
         let screen = event.screen;
         let draw: &mut dyn DrawContext = &mut *event.draw;
         STATE.with_borrow_mut(|s| {
-            if !s.loaded {
-                load(host, s);
-            }
             if !s.settings_loaded {
                 s.cheat = host.setting("jei", "cheat_mode").is_some_and(|v| v == "true");
+                s.bookmarks = BookmarkList::load(&host.setting("jei", "bookmarks").unwrap_or_default());
+                s.hidden = lines(host.setting("jei", "hidden"));
+                s.modes = PREFIXES
+                    .iter()
+                    .map(|p| (p.index, host.setting("jei", &format!("search_{}", p.id)).map_or(default_mode(p.index), |v| parse_mode(&v, default_mode(p.index)))))
+                    .collect();
+                s.columns = host.setting("jei", "max_columns").and_then(|v| v.parse().ok()).unwrap_or(9).clamp(2, 100);
+                s.rows = host.setting("jei", "max_rows").and_then(|v| v.parse().ok()).unwrap_or(16).clamp(1, 100);
                 s.settings_loaded = true;
+            }
+            if !s.loaded {
+                load(host, s);
             }
             if !s.loaded {
                 return;
             }
             let [bw, bh] = draw.size();
             let (bw, bh) = (bw as i32, bh as i32);
+            s.screen_size = [bw, bh];
             let left = (screen.rect[0] + screen.rect[2]) as i32 + MARGIN;
             let area = Rect::new(left, NAV_H, bw - left - MARGIN, bh - NAV_H - SEARCH_H - 2 * MARGIN);
-            let bounds = grid::calculate_bounds(&GridConfig { max_columns: 100, max_rows: 100, ..GridConfig::ingredient_list() }, area, false);
+            let bounds = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::ingredient_list() }, area, false);
             s.grid = bounds;
             s.nav = Rect::new(bounds.x, 2, bounds.w, 16);
             s.search_box = Rect::new(bounds.x.max(left), bh - SEARCH_H - MARGIN, bounds.w.max(80), SEARCH_H);
@@ -295,8 +445,28 @@ impl Hooks for Mod {
                 let a = slot.area;
                 draw.item(s.keys[idx], [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
                 hot.push((a, s.ids[idx].clone()));
+                if s.edit && is_hidden(&s.hidden, &s.ids[idx]) {
+                    draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], 0x80FF0000);
+                }
                 if a.contains(cx, cy) {
                     draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], HOVER);
+                }
+            }
+            // The bookmark list, left of the window.
+            let marks_area = Rect::new(MARGIN, NAV_H, screen.rect[0] as i32 - 2 * MARGIN, bh - NAV_H - 2 * MARGIN);
+            let marks = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::bookmark_list() }, marks_area, false);
+            s.marks = marks;
+            if !marks.is_empty() {
+                for (slot, id) in grid::calculate_slots(marks, &[], None, 0).iter().zip(s.bookmarks.items().to_vec()) {
+                    let a = slot.area;
+                    draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], 0x40FFFF00);
+                    if let Some(&k) = s.index.get(&id) {
+                        draw.item(s.keys[k], [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
+                    }
+                    if a.contains(cx, cy) {
+                        draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], HOVER);
+                    }
+                    hot.push((a, id));
                 }
             }
             s.hot = hot;
@@ -311,12 +481,40 @@ impl Hooks for Mod {
             draw.fill(rect_f(search), 0xFF000000);
             draw.fill(rect_f(Rect::new(search.x + 1, search.y + 1, search.w - 2, search.h - 2)), if s.focused { 0xFF202020 } else { 0xFF101010 });
             let shown = if s.query.is_empty() && !s.focused { "Search...".to_owned() } else { s.query.clone() };
-            draw.text(&shown, [(search.x + 4) as f32, (search.y + 6) as f32], if s.query.is_empty() { 0xFF909090 } else { TEXT }, false);
+            if s.query.is_empty() {
+                draw.text(&shown, [(search.x + 4) as f32, (search.y + 6) as f32], 0xFF909090, false);
+            } else {
+                // `SearchSyntaxHighlighter`: prefixes, operators and content in their colours; red when nothing matches.
+                let prefixes: Vec<char> = PREFIXES.iter().filter(|p| p.prefix != '\0' && s.modes.iter().any(|(k, m)| *k == p.index && *m != SearchMode::Disabled)).map(|p| p.prefix).collect();
+                let colors = highlight::colors(&s.query, s.results.is_empty(), &prefixes);
+                let chars: Vec<char> = shown.chars().collect();
+                let color_at = |u: usize| colors.get(u).copied().unwrap_or(highlight::DEFAULT_CONTENT_COLOR);
+                let (mut x, mut i, mut unit) = ((search.x + 4) as f32, 0, 0);
+                while i < chars.len() {
+                    let color = color_at(unit);
+                    let (mut j, mut u) = (i, unit);
+                    while j < chars.len() && color_at(u) == color {
+                        u += chars[j].len_utf16();
+                        j += 1;
+                    }
+                    let seg: String = chars[i..j].iter().collect();
+                    draw.text(&seg, [x, (search.y + 6) as f32], color, false);
+                    x += draw.text_width(&seg);
+                    i = j;
+                    unit = u;
+                }
+            }
             let _ = PREFIXES.len() + usize::from(SearchMode::Enabled == SearchMode::Enabled);
             s.started.get_or_insert_with(Instant::now);
             s.cheat_button = Rect::new(search.x + search.w + 4, search.y + 2, 44, 14);
             draw.fill(rect_f(s.cheat_button), if s.cheat { 0xFF55AA55 } else { 0xFF555555 });
             draw.text("Cheat", [(s.cheat_button.x + 4) as f32, (s.cheat_button.y + 3) as f32], TEXT, false);
+            s.options_button = Rect::new(s.cheat_button.x + s.cheat_button.w + 4, s.cheat_button.y, 44, 14);
+            draw.fill(rect_f(s.options_button), 0xFF555555);
+            draw.text("Options", [(s.options_button.x + 4) as f32, (s.options_button.y + 3) as f32], TEXT, false);
+            if s.options {
+                draw_options(s, draw);
+            }
             draw_view(s, draw, screen);
         });
     }
@@ -332,9 +530,40 @@ impl Hooks for Mod {
             if !s.loaded {
                 return;
             }
+            if s.options {
+                options_click(host, s, x, y, right);
+                claimed = true;
+                return;
+            }
+            if s.options_button.contains(x, y) {
+                s.options = true;
+                claimed = true;
+                return;
+            }
             if s.view.is_some() {
                 claimed = view_click(s, x, y, right);
                 return;
+            }
+            if let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(x, y)).cloned() {
+                if s.edit && event.modifiers & 2 != 0 && s.grid.contains(x, y) {
+                    // `key.jei.toggleHideIngredient` (Ctrl+left) and `toggleWildcardHideIngredient` (Ctrl+right).
+                    let entry = if right { format!("*{id}") } else { id };
+                    match s.hidden.iter().position(|h| *h == entry) {
+                        Some(at) => {
+                            s.hidden.remove(at);
+                        }
+                        None => s.hidden.push(entry),
+                    }
+                    save_lines(host, "hidden", &s.hidden);
+                    refilter(s);
+                    claimed = true;
+                    return;
+                }
+                if s.marks.contains(x, y) {
+                    open_recipes(s, &id, if right { Role::Input } else { Role::Output });
+                    claimed = true;
+                    return;
+                }
             }
             if s.cheat_button.contains(x, y) {
                 s.cheat = !s.cheat;
@@ -420,6 +649,15 @@ impl Hooks for Mod {
                         s.view = None;
                         s.history.clear();
                         return Flow::Cancel;
+                    }
+                    "key.keyboard.a" => {
+                        // `jei.key.bookmark` (A): bookmark the ingredient under the cursor, or remove it.
+                        let (x, y) = (event.screen.mouse[0] as i32, event.screen.mouse[1] as i32);
+                        if let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(x, y)).cloned() {
+                            s.bookmarks.toggle(&id);
+                            host.set_setting("jei", "bookmarks", &s.bookmarks.save());
+                            return Flow::Cancel;
+                        }
                     }
                     "key.keyboard.r" | "key.keyboard.u" => {
                         // `jei.key.showRecipe` (R) and `jei.key.showUses` (U) on the stack under the cursor.
