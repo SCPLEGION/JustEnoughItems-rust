@@ -4,7 +4,7 @@ version = "0.1.0"
 priority = 100
 
 [compatibility]
-horizon_revision = "e8cdbd5c375f1b7b662c1157ddca3f09489e36d2"
+horizon_revision = "90d666c1ad39982255bf09fdf057a48615f9410b"
 
 # All of JEI's logic: a plain crate staged into Horizon's workspace (horizon-mixins bundle crates).
 [[crate]]

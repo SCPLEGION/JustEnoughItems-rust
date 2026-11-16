@@ -214,6 +214,38 @@ fn register_fuel_and_compost(game: &mut Game<'_>) {
 }
 
 const COMPOST: &str = "jei:compostable";
+/// `IngredientInfoRecipeCategory`: the ingredients in one slot, a description under it.
+const INFO: &str = "jei:information";
+
+/// `IRecipeRegistration.addIngredientInfo`: a description of ingredients (item ids), found by focusing any of them.
+#[allow(dead_code)]
+pub fn add_info(ingredients: Vec<String>, description: Vec<String>) -> Result<(), PluginError> {
+    PLUGINS.with_borrow_mut(|p| {
+        if !p.categories.iter().any(|c| c.recipe_type == INFO) {
+            p.register_category(CategoryDef::custom(INFO, "Information", "minecraft:book", Layout { width: 170, height: 125, slots: vec![slot_input(0, 77, 1)], arrow: None }))?;
+        }
+        p.add_recipe(CustomRecipe { recipe_type: INFO.to_owned(), inputs: vec![ingredients.clone()], outputs: vec![ingredients], notes: vec![description.join("\n")] })
+    })
+}
+
+/// Word wrap, as `Font.split`: paragraphs on `\n`, words kept whole.
+fn wrap_lines(game: &Game<'_>, text: &str, width: i32) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split(' ') {
+            let try_line = if line.is_empty() { word.to_owned() } else { format!("{line} {word}") };
+            if !line.is_empty() && text_w(game, &try_line) > width {
+                out.push(std::mem::take(&mut line));
+                line = word.to_owned();
+            } else {
+                line = try_line;
+            }
+        }
+        out.push(line);
+    }
+    out
+}
 
 /// `NumberFormat` with at most two fraction digits.
 fn trim_float(v: f32) -> String {
@@ -701,7 +733,16 @@ fn draw_view(game: &Game<'_>, batch: &mut HudBatch, s: &mut State, cx: i32, cy: 
     if let Some(c) = custom.as_ref().filter(|c| !c.notes.is_empty()) {
         let step = (s.started.elapsed().as_millis() / CYCLE_MS) as usize % c.notes.len();
         let note = &c.notes[step];
-        game.native_text(batch, note, [(origin.0 + (lay.width - text_w(game, note)) / 2) as f32, (origin.1 + lay.height + 4) as f32], 0x404040, false);
+        if cat.recipe_type == INFO {
+            // The scroll box under the slot: the description wrapped to the recipe's width (`ScrollBoxRecipeWidget`).
+            let lines = wrap_lines(game, note, lay.width - 4);
+            let room = ((lay.height - 22) / 9).max(1) as usize;
+            for (i, line) in lines.iter().take(room).enumerate() {
+                game.native_text(batch, line, [(origin.0 + 2) as f32, (origin.1 + 22 + i as i32 * 9) as f32], 0x404040, false);
+            }
+        } else {
+            game.native_text(batch, note, [(origin.0 + (lay.width - text_w(game, note)) / 2) as f32, (origin.1 + lay.height + 4) as f32], 0x404040, false);
+        }
     }
     if let Some((_, id)) = hot.iter().find(|(r, _)| r.contains(cx, cy)) {
         let id = split_ingredient(id).0.to_owned();
