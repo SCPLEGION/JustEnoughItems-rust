@@ -2,7 +2,7 @@
 // the game's items and recipes (`native_recipes`), draws the ingredient list beside container screens
 // (`native_container_*`, API 87) and the recipe view, and hears clicks, keys and the wheel.
 
-use super::native_hooks::{NativeRecipeKind, NativeRecipes};
+use super::native_hooks::{NativeCreativeStack, NativeRecipeKind, NativeRecipes};
 use super::Game;
 use horizon_client::hud::HudBatch;
 use jei_core::bookmarks::BookmarkList;
@@ -67,6 +67,8 @@ struct Places {
 struct State {
     data: Option<Arc<NativeRecipes>>,
     infos: Vec<ListElementInfo>,
+    /// The list's ingredients (`id` or `id\u{1}components`), indexed like `infos` and the search.
+    elements: Vec<String>,
     search: ElementSearch,
     mgr: RecipeManager,
     /// Recipe id -> index into `data.recipes`.
@@ -110,6 +112,7 @@ impl State {
         Self {
             data: None,
             infos: Vec::new(),
+            elements: Vec::new(),
             search: ElementSearch::new(default_mode),
             mgr: RecipeManager::new(),
             recipe_of: Vec::new(),
@@ -235,7 +238,7 @@ fn kind_of(k: NativeRecipeKind) -> Kind {
 }
 
 /// Builds JEI's indexes from the game's items and recipes, once per set of them.
-fn load(state: &mut State, data: Arc<NativeRecipes>) {
+fn load(state: &mut State, data: Arc<NativeRecipes>, stacks: Vec<NativeCreativeStack>) {
     let plugins = PLUGINS.with_borrow(Clone::clone);
     if !state.dirty && plugins.version == state.plugin_version && state.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &data)) {
         return;
@@ -246,22 +249,46 @@ fn load(state: &mut State, data: Arc<NativeRecipes>) {
     state.infos.clear();
     let modes = state.modes.clone();
     state.search = ElementSearch::new(|i| modes.iter().find(|(k, _)| *k == i).map_or(SearchMode::Disabled, |(_, m)| *m));
-    for (i, item) in data.items.iter().enumerate() {
-        let (ns, path) = item.id.split_once(':').unwrap_or(("minecraft", item.id.as_str()));
-        let d = IngredientData {
-            display_name: item.name.clone(),
+    state.elements.clear();
+    let tags: std::collections::HashMap<&str, &Vec<String>> = data.items.iter().map(|i| (i.id.as_str(), &i.tags)).collect();
+    let names: std::collections::HashMap<&str, &str> = data.items.iter().map(|i| (i.id.as_str(), i.name.as_str())).collect();
+    let mut covered = std::collections::HashSet::new();
+    let mut push = |state: &mut State, ing: String, d: IngredientData| {
+        let i = state.infos.len();
+        let info = ListElementInfo::new(d, &cfg, i);
+        state.search.add(i, |idx: SearchIndex| info.strings(idx, &cfg));
+        state.infos.push(info);
+        state.elements.push(ing);
+    };
+    let ingredient_data = |id: &str, name: String, tags: Vec<String>| {
+        let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
+        IngredientData {
+            display_name: name,
             namespace: ns.to_owned(),
             path: path.to_owned(),
             display_mod_id: ns.to_owned(),
             mod_name: mod_name(ns),
             display_mod_name: mod_name(ns),
             mod_aliases: vec![vec![]],
-            tags: item.tags.clone(),
+            tags,
             ..Default::default()
-        };
-        let info = ListElementInfo::new(d, &cfg, i);
-        state.search.add(i, |idx: SearchIndex| info.strings(idx, &cfg));
-        state.infos.push(info);
+        }
+    };
+    // Every creative stack, the variants of an item (potions, books, arrows) with their components...
+    for cs in &stacks {
+        let id = cs.stack.item.as_str();
+        covered.insert(id.to_owned());
+        let ing = if cs.stack.components.is_empty() { id.to_owned() } else { format!("{id}\u{1}{}", cs.stack.components) };
+        let mut d = ingredient_data(id, if cs.name.is_empty() { names.get(id).copied().unwrap_or(id).to_owned() } else { cs.name.clone() }, tags.get(id).map(|t| (*t).clone()).unwrap_or_default());
+        d.tooltip = cs.tooltip.clone();
+        d.creative_tabs = cs.tabs.clone();
+        push(state, ing, d);
+    }
+    // ...and the items no creative tab has.
+    for item in &data.items {
+        if !covered.contains(&item.id) {
+            push(state, item.id.clone(), ingredient_data(&item.id, item.name.clone(), item.tags.clone()));
+        }
     }
     let mut mgr = RecipeManager::new();
     let mut cats: Vec<CategoryDef> = Kind::ALL.iter().map(|k| CategoryDef::vanilla(*k)).collect();
@@ -349,7 +376,8 @@ pub(super) fn tick(game: &mut Game<'_>) {
     let version = PLUGINS.with_borrow(|p| p.version);
     let needs = STATE.with_borrow(|s| s.data.is_none() || s.plugin_version != version || s.dirty);
     if needs && let Some(d) = game.native_recipes() {
-        STATE.with_borrow_mut(|s| load(s, d));
+        let stacks = game.native_creative_stacks();
+        STATE.with_borrow_mut(|s| load(s, d, stacks));
     }
 }
 
@@ -425,13 +453,13 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         s.page = if per_page == 0 { 0 } else { first / per_page };
         for (n, slot) in slots.iter().enumerate() {
             let Some(&idx) = s.results.get(first as usize + n) else { break };
-            let Some(item) = s.data.as_ref().and_then(|d| d.items.get(idx)) else { continue };
+            let Some(item) = s.elements.get(idx) else { continue };
             let a = slot.area;
-            game.native_item(batch, &item.id, [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
+            draw_ing(game, batch, item, [(a.x + 1) as f32, (a.y + 1) as f32]);
             if a.contains(cx, cy) {
                 game.native_fill(batch, rect_f(Rect::new(a.x + 1, a.y + 1, 16, 16)), HOVER);
             }
-            s.hot.push((a, item.id.clone()));
+            s.hot.push((a, item.clone()));
         }
         // The bookmark list, left of the window.
         let marks_area = Rect::new(MARGIN, NAV_H, window[0] as i32 - 2 * MARGIN, bh - NAV_H - 2 * MARGIN);
