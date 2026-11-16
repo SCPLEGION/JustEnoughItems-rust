@@ -31,3 +31,13 @@ example in `client_tick_post`. The viewer rebuilds its recipes when the registry
 
 Tests: `cargo test --lib` in a copy with the SDK path pointed at upstream's `horizon-mod-api` (9 tests: plugin
 registry, search modes, hide mode, completion, history).
+
+## Fidelity to the Java screens
+
+Geometry is ported into jei-core (`recipe_gui`, `overlay_layout`, with tests): the recipe screen (panel size, category and
+page arrows, title, tabs above the panel, `RecipeGuiGrid` cells with their side buttons, `RECIPE_BORDER`), and the
+ingredient list overlay (search field 20 high, config button 20 by 20 at its right end, navigation row, background and
+slot backgrounds). Textures cannot be drawn by a mod yet (the draw context has fills, text and items), so each sprite of
+`assets/jei/textures/gui/sprites` is rebuilt from its pixels in `src/ui.rs`. Not yet: scrolling navigation mode,
+the crafting stations column, the bookmark and option buttons beside each recipe, resize handles.
+The old Cheat button is gone as in Java: Shift+click on the config button toggles cheat mode (the cog turns red).

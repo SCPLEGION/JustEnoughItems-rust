@@ -1,6 +1,7 @@
 //! JEI on Horizon's own mod API: the ingredient list over container screens. All logic is `jei-core`.
 use jei_core::{
     grid::{self, GridConfig, Rect},
+    overlay_layout, recipe_gui,
     recipes::{Focus, RecipeId, Role},
     view::SlotRole,
     bookmarks::BookmarkList,
@@ -18,12 +19,11 @@ use mod_api::{
 };
 pub mod api;
 mod recipes;
+mod ui;
 
 use std::{cell::RefCell, collections::HashMap, time::Instant};
 
-const MARGIN: i32 = 6;
-const NAV_H: i32 = 20;
-const SEARCH_H: i32 = 18;
+const PAGE_NAV_BG: u32 = 0x30000000;
 const TEXT: u32 = 0xFFFFFFFF;
 const HOVER: u32 = 0x80FFFFFF;
 
@@ -54,7 +54,6 @@ struct State {
     started: Option<Instant>,
     /// Cheat mode: a click on a listed item gives it (`jei.cheatMode`).
     cheat: bool,
-    cheat_button: Rect,
     settings_loaded: bool,
     bookmarks: BookmarkList,
     /// Hidden ingredients (`EditModeConfig`): an item id, or `*` and an id for the item's variants.
@@ -68,7 +67,9 @@ struct State {
     rows: i32,
     marks: Rect,
     /// The "+" of the recipe shown: its rect and the recipe id.
-    transfer: Option<(Rect, String)>,
+    hits: Vec<(Rect, Hit)>,
+    per_page: i32,
+    tab_page: Option<usize>,
     /// A transfer the click asked for (recipe, all sets), done in the next client tick.
     pending_transfer: Option<(String, bool)>,
     screen_size: [i32; 2],
@@ -334,6 +335,7 @@ fn open_recipes(s: &mut State, item: &str, role: Role) {
     let focus = Focus { role, uid: item.to_owned() };
     s.lookups.add(item);
     s.lookups_dirty = true;
+    s.tab_page = None;
     let cats: Vec<usize> = r
         .mgr
         .categories(std::slice::from_ref(&focus), false, &|_| true)
@@ -354,6 +356,7 @@ fn select_category(s: &mut State, cat: usize) {
     let (Some(r), Some(v)) = (s.recipes.as_ref(), s.view.as_mut()) else { return };
     v.cat = cat;
     v.page = 0;
+    s.tab_page = None;
     v.recipes = r.mgr.recipes(&r.cats[v.cats[cat]].recipe_type, std::slice::from_ref(&v.focus), false, &|_| true);
 }
 
@@ -365,38 +368,130 @@ fn cycle(s: &State, list: &[String]) -> Option<String> {
     Some(list[(ms / CYCLE_MS) as usize % list.len()].clone())
 }
 
-/// `RecipesGui`: the panel over the screen with the category tabs, the recipe's layout and its page arrows.
+/// What a press on the recipe screen's widgets does.
+#[derive(Clone, Debug)]
+enum Hit {
+    PreviousCategory,
+    NextCategory,
+    PreviousPage,
+    NextPage,
+    Tab(usize),
+    TabsPrevious,
+    TabsNext,
+    Transfer(String),
+}
+
+const NOTE_COLOR: u32 = 0xFF808080;
+
+/// Where a category's text widget sits in its layout (`setPosition(x, 0)`): the fuel and composting categories.
+fn note_x(recipe_type: &str) -> i32 {
+    match recipe_type {
+        "jei:smelting_fuel" => 20,
+        "jei:compostable" => 24,
+        _ => 0,
+    }
+}
+
+/// `RecipesGui`: the panel over the screen (`gui_background`), the category tabs above it, the category and page
+/// arrows with the title, and the recipes of the page in `RecipeGuiGrid` cells, each with its side buttons.
 fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>) {
     let (Some(v), Some(r)) = (s.view.clone(), s.recipes.as_ref()) else { return };
     let cat = r.cats[v.cats[v.cat]].clone();
     let [bw, bh] = draw.size();
     let (bw, bh) = (bw as i32, bh as i32);
-    let ui = v.recipes.get(v.page).and_then(|id| r.ui.get(*id as usize)).cloned();
-    let lay = cat.layout_for(ui.as_ref().map_or((3, 3), |u| u.grid), ui.as_ref().map_or(0, |u| u.inputs.len()));
-    let pw = (lay.width + 24).max(176);
-    let ph = lay.height + 78;
-    let panel = Rect::new((bw - pw) / 2, (bh - ph) / 2, pw, ph);
-    s.panel = panel;
+    let ui_at = |i: usize| v.recipes.get(i).and_then(|id| r.ui.get(*id as usize)).cloned();
     let (cx, cy) = (screen.mouse[0] as i32, screen.mouse[1] as i32);
-    draw.fill(rect_f(panel), BG);
-    draw.fill(rect_f(Rect::new(panel.x + 1, panel.y + 1, panel.w - 2, panel.h - 2)), 0xFFC6C6C6);
-    for (i, ci) in v.cats.iter().enumerate() {
-        let t = Rect::new(panel.x + 4 + i as i32 * 22, panel.y + 4, 20, 20);
-        draw.fill(rect_f(t), if i == v.cat { 0xFFFFFFFF } else { 0xFF8B8B8B });
-        if let Some(&k) = s.index.get(&r.cats[*ci].icon) {
-            draw.item(s.keys[k], [(t.x + 2) as f32, (t.y + 2) as f32], 16.0);
+
+    let ideal = recipe_gui::ideal_area(bw, bh, recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, 0);
+    let nav = recipe_gui::navigation(ideal);
+    let first = ui_at(0);
+    let layout_of = |u: Option<&recipes::UiRecipe>| cat.layout_for(u.map_or((3, 3), |u| u.grid), u.map_or(0, |u| u.inputs.len()));
+    let lay0 = layout_of(first.as_ref());
+    let border = recipe_gui::RECIPE_BORDER;
+    let transfers = |u: &recipes::UiRecipe| !u.id.is_empty() && u.recipe_type == "minecraft:crafting";
+    let buttons = i32::from(first.as_ref().is_some_and(transfers));
+    let total_w = recipe_gui::total_width(lay0.width, lay0.height, border, buttons);
+    let cell_size = (lay0.width + 2 * border, lay0.height + 2 * border);
+    let max_columns = s.config.int("recipes", "maxRecipeGuiColumns") as i32;
+    let area = recipe_gui::area_to_fit(ideal, bw, if first.is_some() { total_w } else { 0 });
+    let avail = recipe_gui::layouts_area(area, nav.header_height);
+    let grid = recipe_gui::RecipeGrid::calculate((avail.w, avail.h), (total_w, cell_size.1), max_columns);
+    let per = grid.recipes_per_page();
+    s.per_page = per;
+    let pages = grid::page_count(v.recipes.len() as i32, per).max(1);
+    let page = (v.page as i32).min(pages - 1);
+    s.panel = area;
+    s.hits.clear();
+
+    ui::gui_background(draw, area);
+    // The tabs, over the panel's top edge.
+    let selected = v.cat;
+    if let Some(mut t) = recipe_gui::tabs(ideal, v.cats.len(), selected) {
+        if let Some(p) = s.tab_page.filter(|p| *p < t.page_count)
+            && let Some(moved) = recipe_gui::tabs(ideal, v.cats.len(), p * t.per_page)
+        {
+            t = moved;
+        }
+        for (i, rect) in t.rects.iter().enumerate() {
+            let index = t.page * t.per_page + i;
+            ui::tab(draw, *rect, index == selected);
+            if let Some(&k) = s.index.get(&r.cats[v.cats[index]].icon) {
+                draw.item(s.keys[k], [(rect.x + 4) as f32, (rect.y + 5) as f32], 16.0);
+            }
+            s.hits.push((*rect, Hit::Tab(index)));
+        }
+        if t.page_count > 1 {
+            let n = t.navigation;
+            let (prev, next) = overlay_layout::nav_buttons(n);
+            for (rect, left) in [(prev, true), (next, false)] {
+                ui::button(draw, rect, rect.contains(cx, cy));
+                ui::arrow(draw, rect, left);
+            }
+            let label = format!("{}/{}", t.page + 1, t.page_count);
+            let lw = draw.text_width(&label) as i32;
+            draw.text(&label, [(n.x + (n.w - lw) / 2) as f32, (n.y + (n.h - 9) / 2) as f32], TEXT, true);
+            s.hits.push((prev, Hit::TabsPrevious));
+            s.hits.push((next, Hit::TabsNext));
+            s.tab_page = Some(t.page);
         }
     }
-    draw.text(&cat.title, [(panel.x + 6) as f32, (panel.y + 28) as f32], 0xFF404040, false);
-    let origin = (panel.x + (pw - lay.width) / 2, panel.y + 42);
+
+    // The arrows and the title between them.
+    let between = |a: Rect, b: Rect| Rect::new(a.x + a.w, a.y, b.x - (a.x + a.w), a.h);
+    let bar = between(nav.previous_category, nav.next_category);
+    draw.fill(rect_f(bar), PAGE_NAV_BG);
+    let mut title = cat.title.clone();
+    while draw.text_width(&title) as i32 > nav.title.w && title.pop().is_some() {}
+    let tw = draw.text_width(&title) as i32;
+    draw.text(&title, [(nav.title.x + (nav.title.w - tw) / 2) as f32, (nav.title.y + (nav.title.h - 9) / 2) as f32], TEXT, true);
+    let mut arrows = vec![(nav.previous_category, true, Hit::PreviousCategory), (nav.next_category, false, Hit::NextCategory)];
+    draw.fill(rect_f(between(nav.previous_page, nav.next_page)), PAGE_NAV_BG);
+    let label = recipe_gui::page_string(page * per, per, v.recipes.len() as i32);
+    let lw = draw.text_width(&label) as i32;
+    draw.text(&label, [(nav.page_area.x + (nav.page_area.w - lw) / 2) as f32, (nav.page_area.y + (nav.page_area.h - 9) / 2) as f32], TEXT, true);
+    arrows.push((nav.previous_page, true, Hit::PreviousPage));
+    arrows.push((nav.next_page, false, Hit::NextPage));
+    for (rect, left, hit) in arrows {
+        ui::button(draw, rect, rect.contains(cx, cy));
+        ui::arrow(draw, rect, left);
+        s.hits.push((rect, hit));
+    }
+
+    // The recipes of the page.
     let mut hot = Vec::new();
-    if let Some(u) = ui {
+    for slot_index in 0..per {
+        let idx = (page * per + slot_index) as usize;
+        let Some(u) = ui_at(idx) else { break };
+        let lay = layout_of(Some(&u));
+        let cell = grid.recipe_area(slot_index, avail, cell_size, total_w);
+        let origin = (cell.x + border, cell.y + border);
+        ui::recipe_background(draw, Rect::new(cell.x, cell.y, lay.width + 2 * border, lay.height + 2 * border));
         if let Some((ax, ay)) = lay.arrow {
-            draw.text("->", [(origin.0 + ax) as f32, (origin.1 + ay + 4) as f32], 0xFF404040, false);
+            ui::recipe_arrow(draw, origin.0 + ax, origin.1 + ay);
         }
         for slot in &lay.slots {
             let rect = Rect::new(origin.0 + slot.x, origin.1 + slot.y, 18, 18);
-            draw.fill(rect_f(rect), SLOT_BG);
+            ui::slot(draw, rect);
             let list: Vec<String> = match slot.role {
                 SlotRole::Input => u.inputs.get(slot.input).cloned().unwrap_or_default(),
                 SlotRole::Output => u.outputs.clone(),
@@ -412,69 +507,74 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
                 hot.push((rect, id));
             }
         }
-    }
-    s.transfer = None;
-    if let Some(u) = v.recipes.get(v.page).and_then(|id| r.ui.get(*id as usize)).filter(|u| !u.id.is_empty() && u.recipe_type == "minecraft:crafting") {
-        // Recipe transfer (`+`): the recipe's ingredients go into the open crafting grid.
-        let b = Rect::new(origin.0 + lay.width - 13, origin.1 + lay.height - 13, 13, 13);
-        draw.fill(rect_f(b), if b.contains(cx, cy) { 0xFF55FF55 } else { 0xFF339933 });
-        draw.text("+", [(b.x + 4) as f32, (b.y + 3) as f32], TEXT, true);
-        s.transfer = Some((b, u.id.clone()));
-    }
-    let label = format!("{}/{}", v.page + 1, v.recipes.len().max(1));
-    let lw = draw.text_width(&label) as i32;
-    draw.text("<", [(panel.x + 8) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
-    draw.text(">", [(panel.x + pw - 14) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
-    draw.text(&label, [(panel.x + (pw - lw) / 2) as f32, (panel.y + ph - 14) as f32], 0xFF404040, false);
-    if let Some(u) = v.recipes.get(v.page).and_then(|id| r.ui.get(*id as usize)).filter(|u| !u.note.is_empty()) {
-        draw.text(&u.note, [(origin.0 + (lay.width - draw.text_width(&u.note) as i32) / 2) as f32, (origin.1 + lay.height + 4) as f32], 0xFF404040, false);
+        if !u.note.is_empty() {
+            // The text widget: centred in the box from `x` to the layout's right edge, over its whole height.
+            let x = note_x(&u.recipe_type);
+            let tw = draw.text_width(&u.note) as i32;
+            draw.text(&u.note, [(origin.0 + x + (lay.width - x - tw) / 2) as f32, (origin.1 + (lay.height - 9) / 2) as f32], NOTE_COLOR, false);
+        }
+        if transfers(&u) {
+            // Recipe transfer: the first side button, right of the layout (`getSideButtonArea(0)`).
+            let b = recipe_gui::side_button(lay.width, lay.height, border, 0);
+            let rect = Rect::new(origin.0 + b.x, origin.1 + b.y, b.w, b.h);
+            ui::button(draw, rect, rect.contains(cx, cy));
+            ui::plus(draw, rect);
+            s.hits.push((rect, Hit::Transfer(u.id.clone())));
+        }
     }
     s.hot = hot;
-    // `LookupHistory`: the recipes looked up lately, under the view; a click opens that item's recipes.
+    // `LookupHistory`: the recipes looked up lately, under the panel; a click opens that item's recipes.
     s.lookup_rects.clear();
-    let per = ((pw - 4) / 18).max(1) as usize;
-    for (i, id) in s.lookups.items().iter().take(per).enumerate() {
+    let per_row = ((area.w - 4) / 18).max(1) as usize;
+    for (i, id) in s.lookups.items().iter().take(per_row).enumerate() {
         let Some(&k) = s.index.get(id) else { continue };
-        let r = Rect::new(panel.x + 2 + i as i32 * 18, panel.y + ph + 4, 18, 18);
-        draw.fill(rect_f(r), SLOT_BG);
-        draw.item(s.keys[k], [(r.x + 1) as f32, (r.y + 1) as f32], 16.0);
-        s.lookup_rects.push((r, id.clone()));
+        let rect = Rect::new(area.x + 2 + i as i32 * 18, area.y + area.h + 4, 18, 18);
+        ui::slot(draw, rect);
+        draw.item(s.keys[k], [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
+        s.lookup_rects.push((rect, id.clone()));
     }
 }
 
-/// A press inside the open view; true when it was the view's (always, inside the panel).
+/// A press while the view is open; true when the view took it (always: it is modal).
 fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
-    let p = s.panel;
     if let Some((_, id)) = s.lookup_rects.iter().find(|(r, _)| r.contains(x, y)).cloned() {
         open_recipes(s, &id, Role::Output);
         return true;
     }
-    if !p.contains(x, y) {
-        s.view = None;
-        s.history.clear();
+    if let Some((_, hit)) = s.hits.iter().find(|(r, _)| r.contains(x, y)).cloned() {
+        let (cats, cat, recipes) = s.view.as_ref().map_or((0, 0, 0), |v| (v.cats.len(), v.cat, v.recipes.len()));
+        let per = s.per_page.max(1);
+        let pages = grid::page_count(recipes as i32, per).max(1) as usize;
+        match hit {
+            Hit::Transfer(id) => {
+                // Left places the recipe once, right as many as the items allow (JEI: Shift).
+                s.pending_transfer = Some((id, right));
+                s.view = None;
+                s.history.clear();
+            }
+            Hit::Tab(i) => select_category(s, i),
+            Hit::PreviousCategory | Hit::NextCategory if cats > 0 => {
+                let next = if matches!(hit, Hit::NextCategory) { (cat + 1) % cats } else { (cat + cats - 1) % cats };
+                select_category(s, next);
+            }
+            Hit::PreviousPage | Hit::NextPage => {
+                if let Some(v) = s.view.as_mut() {
+                    v.page = if matches!(hit, Hit::NextPage) { (v.page + 1) % pages } else { (v.page + pages - 1) % pages };
+                }
+            }
+            Hit::TabsPrevious | Hit::TabsNext => {
+                let per_tabs = ((recipe_gui::ideal_area(s.screen_size[0], s.screen_size[1], recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, 0).w - 4) / recipe_gui::TAB_WIDTH).max(1) as usize;
+                let tab_pages = cats.div_ceil(per_tabs).max(1);
+                let page = s.tab_page.unwrap_or(0);
+                s.tab_page = Some(if matches!(hit, Hit::TabsNext) { (page + 1) % tab_pages } else { (page + tab_pages - 1) % tab_pages });
+            }
+            _ => {}
+        }
         return true;
     }
-    if let Some((b, id)) = s.transfer.clone()
-        && b.contains(x, y)
-    {
-        // Left places the recipe once, right as many as the items allow (JEI: Shift).
-        s.pending_transfer = Some((id, right));
+    if !s.panel.contains(x, y) {
         s.view = None;
         s.history.clear();
-        return true;
-    }
-    let cats = s.view.as_ref().map_or(0, |v| v.cats.len());
-    for i in 0..cats {
-        if Rect::new(p.x + 4 + i as i32 * 22, p.y + 4, 20, 20).contains(x, y) {
-            select_category(s, i);
-            return true;
-        }
-    }
-    if y >= p.y + p.h - 18 {
-        if let Some(v) = s.view.as_mut() {
-            let n = v.recipes.len().max(1);
-            v.page = if x < p.x + p.w / 2 { (v.page + n - 1) % n } else { (v.page + 1) % n };
-        }
         return true;
     }
     if let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(x, y)).cloned() {
@@ -533,21 +633,27 @@ impl Hooks for Mod {
             let [bw, bh] = draw.size();
             let (bw, bh) = (bw as i32, bh as i32);
             s.screen_size = [bw, bh];
-            let left = (screen.rect[0] + screen.rect[2]) as i32 + MARGIN;
-            let area = Rect::new(left, NAV_H, bw - left - MARGIN, bh - NAV_H - SEARCH_H - 2 * MARGIN);
+            let gui_right = (screen.rect[0] + screen.rect[2]) as i32;
+            let area = overlay_layout::available_grid_area(gui_right, bw, bh);
             let bounds = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::ingredient_list() }, area, false);
             s.grid = bounds;
-            s.nav = Rect::new(bounds.x, 2, bounds.w, 16);
-            s.search_box = Rect::new(bounds.x.max(left), bh - SEARCH_H - MARGIN, bounds.w.max(80), SEARCH_H);
+            let areas = overlay_layout::areas(gui_right, bw, bh, bounds);
+            s.nav = areas.navigation;
+            s.search_box = areas.search;
+            s.options_button = areas.config_button;
             if bounds.is_empty() {
                 return;
             }
+            ui::gui_background(draw, areas.background);
             let (cx, cy) = (screen.mouse[0] as i32, screen.mouse[1] as i32);
             let slots = grid::calculate_slots(bounds, &[], None, 0);
             let per_page = slots.len() as i32;
             let first = grid::first_item_index_for_valid_page(s.page * per_page, s.results.len() as i32, per_page);
             s.page = if per_page == 0 { 0 } else { first / per_page };
             let mut hot = Vec::new();
+            for slot in &slots {
+                ui::slot(draw, slot.area);
+            }
             for (n, slot) in slots.iter().enumerate() {
                 let Some(&idx) = s.results.get(first as usize + n) else { break };
                 let a = slot.area;
@@ -561,13 +667,19 @@ impl Hooks for Mod {
                 }
             }
             // The bookmark list, left of the window.
-            let marks_area = Rect::new(MARGIN, NAV_H, screen.rect[0] as i32 - 2 * MARGIN, bh - NAV_H - 2 * MARGIN);
+            let marks_area = overlay_layout::available_grid_area_in(Rect::new(0, 0, screen.rect[0] as i32, bh), false);
             let marks = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::bookmark_list() }, marks_area, false);
             s.marks = marks;
             if !marks.is_empty() {
+                let slot_bg = marks.expand_by(overlay_layout::INNER_PADDING);
+                let nav = Rect::new(slot_bg.x, slot_bg.y - (overlay_layout::NAVIGATION_HEIGHT + overlay_layout::INNER_PADDING), slot_bg.w, overlay_layout::NAVIGATION_HEIGHT);
+                let panel = Rect::new(slot_bg.x.min(nav.x), nav.y, slot_bg.w, slot_bg.y + slot_bg.h - nav.y).expand_by(overlay_layout::BORDER_PADDING);
+                ui::gui_background(draw, panel);
+                for slot in grid::calculate_slots(marks, &[], None, 0) {
+                    ui::slot(draw, slot.area);
+                }
                 for (slot, id) in grid::calculate_slots(marks, &[], None, 0).iter().zip(s.bookmarks.items().to_vec()) {
                     let a = slot.area;
-                    draw.fill([(a.x + 1) as f32, (a.y + 1) as f32, 16.0, 16.0], 0x40FFFF00);
                     if let Some(&k) = s.index.get(&id) {
                         draw.item(s.keys[k], [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
                     }
@@ -582,9 +694,13 @@ impl Hooks for Mod {
             let label = format!("{}/{}", s.page + 1, pages);
             let lw = draw.text_width(&label) as i32;
             let nav = s.nav;
-            draw.text("<", [(nav.x + 4) as f32, (nav.y + 4) as f32], TEXT, true);
-            draw.text(">", [(nav.x + nav.w - 10) as f32, (nav.y + 4) as f32], TEXT, true);
-            draw.text(&label, [(nav.x + (nav.w - lw) / 2) as f32, (nav.y + 4) as f32], TEXT, true);
+            let (back, next) = overlay_layout::nav_buttons(nav);
+            draw.fill(rect_f(Rect::new(back.x + back.w, nav.y, next.x - (back.x + back.w), nav.h)), PAGE_NAV_BG);
+            for (b, left) in [(back, true), (next, false)] {
+                ui::button(draw, b, b.contains(cx, cy));
+                ui::arrow(draw, b, left);
+            }
+            draw.text(&label, [(nav.x + (nav.w - lw) / 2) as f32, (nav.y + (nav.h - 9) / 2) as f32], TEXT, true);
             let search = s.search_box;
             draw.fill(rect_f(search), 0xFF000000);
             draw.fill(rect_f(Rect::new(search.x + 1, search.y + 1, search.w - 2, search.h - 2)), if s.focused { 0xFF202020 } else { 0xFF101010 });
@@ -614,7 +730,7 @@ impl Hooks for Mod {
             }
             let cands = suggestions(s);
             for (i, c) in cands.iter().enumerate() {
-                let r = Rect::new(search.x, search.y + search.h + i as i32 * 11, search.w.max(120), 11);
+                let r = Rect::new(search.x, search.y - (cands.len() - i) as i32 * 11, search.w.max(120), 11);
                 draw.fill(rect_f(r), 0xF0101010);
                 draw.text(&c.display, [(r.x + 3) as f32, (r.y + 2) as f32], if i == 0 { 0xFFFFFF55 } else { TEXT }, false);
                 if !c.description.is_empty() {
@@ -622,12 +738,10 @@ impl Hooks for Mod {
                 }
             }
             s.started.get_or_insert_with(Instant::now);
-            s.cheat_button = Rect::new(search.x + search.w + 4, search.y + 2, 44, 14);
-            draw.fill(rect_f(s.cheat_button), if s.cheat { 0xFF55AA55 } else { 0xFF555555 });
-            draw.text("Cheat", [(s.cheat_button.x + 4) as f32, (s.cheat_button.y + 3) as f32], TEXT, false);
-            s.options_button = Rect::new(s.cheat_button.x + s.cheat_button.w + 4, s.cheat_button.y, 44, 14);
-            draw.fill(rect_f(s.options_button), 0xFF555555);
-            draw.text("Options", [(s.options_button.x + 4) as f32, (s.options_button.y + 3) as f32], TEXT, false);
+            // The config button (`config_button.png`; the cheat icon, red, while cheating).
+            let cfg = s.options_button;
+            ui::button(draw, cfg, cfg.contains(cx, cy));
+            ui::cog(draw, cfg, if s.cheat { 0xFFFF5555 } else { 0xFFDDDDDD });
             if s.options {
                 draw_options(s, draw);
             }
@@ -661,7 +775,13 @@ impl Hooks for Mod {
                 return;
             }
             if s.options_button.contains(x, y) {
-                s.options = true;
+                if event.modifiers & 1 != 0 {
+                    // Shift on the config button toggles cheat mode (`toggleCheatModeConfigButton`).
+                    s.cheat = !s.cheat;
+                    host.set_setting("jei", "cheat_mode", if s.cheat { "true" } else { "false" });
+                } else {
+                    s.options = true;
+                }
                 claimed = true;
                 return;
             }
@@ -689,12 +809,6 @@ impl Hooks for Mod {
                     claimed = true;
                     return;
                 }
-            }
-            if s.cheat_button.contains(x, y) {
-                s.cheat = !s.cheat;
-                host.set_setting("jei", "cheat_mode", if s.cheat { "true" } else { "false" });
-                claimed = true;
-                return;
             }
             if s.search_box.contains(x, y) {
                 s.focused = true;
@@ -754,6 +868,17 @@ impl Hooks for Mod {
         }
         let (x, y) = (event.screen.mouse[0] as i32, event.screen.mouse[1] as i32);
         STATE.with_borrow_mut(|s| {
+            if s.view.is_some() {
+                // `RecipeNavigationInputHandler`: the wheel over the recipe screen turns its pages.
+                if s.panel.contains(x, y) {
+                    let pages = grid::page_count(s.view.as_ref().map_or(0, |v| v.recipes.len()) as i32, s.per_page.max(1)).max(1) as usize;
+                    if let Some(v) = s.view.as_mut() {
+                        v.page = if event.scroll[1] > 0.0 { (v.page + pages - 1) % pages } else { (v.page + 1) % pages };
+                    }
+                    return Flow::Cancel;
+                }
+                return Flow::Continue;
+            }
             if !s.loaded || !(s.grid.contains(x, y) || s.nav.contains(x, y)) {
                 return Flow::Continue;
             }
