@@ -370,20 +370,31 @@ fn open_recipes(s: &mut State, item: &str, role: Role) {
     if cats.is_empty() {
         return;
     }
-    let recipes = r.mgr.recipes(&r.cats[cats[0]].recipe_type, std::slice::from_ref(&focus), false, &|_| true);
+    let mut recipes = r.mgr.recipes(&r.cats[cats[0]].recipe_type, std::slice::from_ref(&focus), false, &|_| true);
+    sort_recipes(&mut recipes, r, &s.bookmarks, s.config.bool("recipes", "recipeSortingBookmarks"));
     if let Some(old) = s.view.take() {
         s.history.push(old);
     }
     s.view = Some(View { cats, cat: 0, page: 0, first: 0, recipes, focus });
 }
 
+/// `RecipeSorter` with `recipeSortingBookmarks`: recipes whose output is bookmarked come first, the rest keep their order.
+/// (`recipeSortingCraftable` needs the player's inventory, which the mod API does not give a client mod yet.)
+fn sort_recipes(recipes: &mut [jei_core::recipes::RecipeId], r: &recipes::Recipes, bookmarks: &BookmarkList, enabled: bool) {
+    if enabled {
+        recipes.sort_by_key(|id| !r.ui.get(*id as usize).and_then(|u| u.outputs.first()).is_some_and(|o| bookmarks.contains(o)));
+    }
+}
+
 fn select_category(s: &mut State, cat: usize) {
+    let sort = s.config.bool("recipes", "recipeSortingBookmarks");
     let (Some(r), Some(v)) = (s.recipes.as_ref(), s.view.as_mut()) else { return };
     v.cat = cat;
     v.page = 0;
     v.first = 0;
     s.tab_page = None;
     v.recipes = r.mgr.recipes(&r.cats[v.cats[cat]].recipe_type, std::slice::from_ref(&v.focus), false, &|_| true);
+    sort_recipes(&mut v.recipes, r, &s.bookmarks, sort);
 }
 
 fn cycle(s: &State, list: &[String]) -> Option<String> {
