@@ -59,8 +59,10 @@ Screens and behaviour:
 7. **Ingredient types beyond items**: fluids and other mods' types (needs the API's ingredient-type registry).
 8. **Inventory integration**: shift to exclusion areas of the inventory effects, the recipe book and toasts
    (`toastReflowEnabled`, `compactInventoryEffects`), cheat give modes, `quickMove`.
-9. **Sort stages** for the ingredient list (`ingredientSortStages`); `recipeSortingBookmarks`, `recipeSortingCraftable` (crafting only, one item per slot),
+9. **Sort stages**: the default stages (mod name, creative menu) are applied; the `ingredientSortStages` option and the
+   other stages (type, alphabetical, tag, armor, durability) are not; `recipeSortingBookmarks`, `recipeSortingCraftable` (crafting only, one item per slot),
    `giveMode` and the tag tooltip (`Accepts any: #tag`) are done.
-10. **Language**: titles and strings are English; read the game's language files.
+10. **Language**: the lang files ship as mod assets and category titles, notes and costs read them (`host.translate`); the
+    overlay's own strings (search hint, options, tooltips) are still English literals.
 11. **Real run**: needs the `mixins` pin from `cargo horizon-mod new` and a prebuilt game; then fix whatever the first
     in-game run shows (sprite names and atlas packing of mod assets are unverified).
