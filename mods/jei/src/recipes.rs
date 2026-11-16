@@ -23,6 +23,7 @@ pub struct UiRecipe {
 
 const FUEL: &str = "jei:smelting_fuel";
 const COMPOST: &str = "jei:compostable";
+const ANVIL: &str = "jei:anvil";
 
 /// `NumberFormat` with at most two fraction digits.
 fn trim_float(v: f32) -> String {
@@ -161,7 +162,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     );
     let mut fuels: Vec<(i32, Vec<String>)> = Vec::new();
     for (key, id) in names {
-        if let Some(ticks) = host.item_burn_time(*key).filter(|t| *t > 0) {
+        if let Some(ticks) = host.item_fuel(*key, false).map(|f| (f.ticks as f32 * f.speed) as i32).filter(|t| *t > 0) {
             match fuels.iter_mut().find(|f| f.0 == ticks) {
                 Some(f) => f.1.push(id.clone()),
                 None => fuels.push((ticks, vec![id.clone()])),
@@ -185,6 +186,21 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     for (chance, id) in compost {
         let note = format!("Chance: {}%", (chance * 100.0).floor() as i32);
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
+    }
+    // The anvil (`AnvilRecipeMaker`): each repairable item with its materials, each enchantable one with books.
+    register(
+        &mut mgr,
+        &mut cats,
+        CategoryDef::custom(ANVIL, "Anvil", "minecraft:anvil", Layout { width: 125, height: 18, slots: vec![view::input(0, 0, 0), view::input(1, 49, 0), view::output(107, 0)], arrow: None }),
+    );
+    for a in host.anvil_recipes() {
+        let id_list = |v: &[ItemStack]| -> Vec<String> { v.iter().filter_map(|s| id_of(names, s)).collect() };
+        let (left, right, out) = (id_list(&a.left), id_list(&a.right), id_list(&a.results));
+        if left.is_empty() || right.is_empty() || out.is_empty() {
+            continue;
+        }
+        let note = a.costs.iter().min().map(|c| format!("Cost: {c}")).unwrap_or_default();
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: ANVIL.into(), note, grid: (1, 1), inputs: vec![left, right], outputs: out });
     }
     // Categories and recipes other mods registered through `api` (`IModPlugin`).
     let plugins = crate::api::snapshot();
