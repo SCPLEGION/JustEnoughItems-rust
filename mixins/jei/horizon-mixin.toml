@@ -4,7 +4,7 @@ version = "0.1.0"
 priority = 100
 
 [compatibility]
-horizon_revision = "6f8e2354eb8af6262fbdbfc9aad3e1860f08b57b"
+horizon_revision = "4a0cdf99a4b8a528046070b1f97ae8e4ed22ada1"
 
 # All of JEI's logic: a plain crate staged into Horizon's workspace (horizon-mixins bundle crates).
 [[crate]]
@@ -78,5 +78,19 @@ bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "at", ty = "[f32; 2]", value = "at" },
   { name = "steps", ty = "f32", value = "steps" },
+  { name = "claimed", ty = "&mut bool", value = "&mut *claimed" },
+]
+
+[[injection]]
+id = "container-release"
+hook = "container_release"
+hook_version = 1
+kind = "HEAD"
+helper = "container_release.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "window", ty = "[f32; 4]", value = "window" },
+  { name = "at", ty = "[f32; 2]", value = "at" },
+  { name = "button", ty = "u8", value = "button" },
   { name = "claimed", ty = "&mut bool", value = "&mut *claimed" },
 ]
