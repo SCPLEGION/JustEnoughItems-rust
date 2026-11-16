@@ -10,6 +10,8 @@ use std::collections::HashMap;
 /// What a recipe's view draws: its category, the crafting grid, and the ingredients of each slot.
 #[derive(Clone, Debug, Default)]
 pub struct UiRecipe {
+    /// The recipe's id (`minecraft:oak_planks`), for the transfer button.
+    pub id: String,
     /// The category's `IRecipeType` uid.
     pub recipe_type: String,
     /// A line under the layout (a fuel's smelt count, a compostable's chance).
@@ -111,24 +113,24 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
                             ((n.clamp(1, 3), (n + 2) / 3), inputs)
                         }
                     };
-                    UiRecipe { recipe_type: kind.recipe_type().into(), note: String::new(), grid, inputs, outputs: vec![out] }
+                    UiRecipe { id: r.id.clone(), recipe_type: kind.recipe_type().into(), note: String::new(), grid, inputs, outputs: vec![out] }
                 }
                 Kind::Stonecutting => match &r.rule {
                     Some(RecipeRule::Stonecutting { input, result }) => {
-                        UiRecipe { recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(input)], outputs: id_of(names, result).into_iter().collect() }
+                        UiRecipe { id: String::new(), recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(input)], outputs: id_of(names, result).into_iter().collect() }
                     }
                     _ => continue,
                 },
                 Kind::Smithing => match &r.rule {
                     Some(RecipeRule::SmithingTransform { template, base, addition, result }) => UiRecipe {
-                        recipe_type: kind.recipe_type().into(),
+                        id: String::new(), recipe_type: kind.recipe_type().into(),
                         note: String::new(),
                         grid: (3, 1),
                         inputs: vec![opt(template), ids(base), opt(addition)],
                         outputs: result.item.clone().into_iter().collect(),
                     },
                     Some(RecipeRule::SmithingTrim { template, base, addition, .. }) => UiRecipe {
-                        recipe_type: kind.recipe_type().into(),
+                        id: String::new(), recipe_type: kind.recipe_type().into(),
                         note: String::new(),
                         grid: (3, 1),
                         inputs: vec![ids(template), ids(base), ids(addition)],
@@ -138,7 +140,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
                 },
                 _ => {
                     let (Some(i), Some(out)) = (r.ingredients.first(), first_result) else { continue };
-                    UiRecipe { recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(i)], outputs: vec![out] }
+                    UiRecipe { id: String::new(), recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(i)], outputs: vec![out] }
                 }
             };
             add(&mut mgr, u);
@@ -171,7 +173,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         items.sort();
         let count = ticks as f32 / 200.0;
         let note = if count == 1.0 { "Smelts 1 item".to_owned() } else { format!("Smelts {} items", trim_float(count)) };
-        add(&mut mgr, UiRecipe { recipe_type: FUEL.into(), note, grid: (1, 1), inputs: vec![items], outputs: vec![] });
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: FUEL.into(), note, grid: (1, 1), inputs: vec![items], outputs: vec![] });
     }
     register(
         &mut mgr,
@@ -182,7 +184,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     compost.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     for (chance, id) in compost {
         let note = format!("Chance: {}%", (chance * 100.0).floor() as i32);
-        add(&mut mgr, UiRecipe { recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
     }
     Recipes { mgr, cats, ui }
 }
