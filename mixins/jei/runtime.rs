@@ -91,6 +91,8 @@ struct State {
     modes: Vec<(SearchIndex, SearchMode)>,
     columns: i32,
     rows: i32,
+    /// An item pressed in the list and not yet released: (item, right button).
+    drag: Option<(String, bool)>,
     dirty: bool,
     screen: (i32, i32),
     options_button: Rect,
@@ -126,6 +128,7 @@ impl State {
             modes: PREFIXES.iter().map(|p| (p.index, default_mode(p.index))).collect(),
             columns: 9,
             rows: 16,
+            drag: None,
             dirty: false,
             screen: (0, 0),
             options_button: Rect::EMPTY,
@@ -418,8 +421,12 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         s.options_button = Rect::new(s.cheat_button.x + s.cheat_button.w + 4, s.cheat_button.y, 44, 14);
         game.native_fill(batch, rect_f(s.options_button), 0xFF555555);
         game.native_text(batch, "Options", [(s.options_button.x + 4) as f32, (s.options_button.y + 3) as f32], TEXT, false);
+        if let Some((id, _)) = &s.drag {
+            // The dragged item follows the cursor.
+            game.native_item(batch, id, [(cx - 8) as f32, (cy - 8) as f32], 16.0);
+        }
         // Tooltip of the hovered stack.
-        if s.view.is_none() {
+        if s.view.is_none() && s.drag.is_none() {
             let hovered = s.hot.iter().find(|(r, _)| r.contains(cx, cy)).map(|(_, id)| id.clone());
             if let Some(id) = hovered {
                 tooltip(game, batch, &id, cx, cy);
@@ -690,7 +697,8 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
                 // Cheat mode: left gives a stack, right one (needs creative mode).
                 let _ = game.native_give(&id, if right { 1 } else { 64 });
             } else {
-                open_recipes(s, &id, if right { Role::Input } else { Role::Output });
+                // Opens its recipes on release, or drops into a ghost slot of a mod screen (`native_screen_drop`).
+                s.drag = Some((id, right));
             }
             *claimed = true;
         }
@@ -774,4 +782,24 @@ pub(super) fn container_wheel(game: &mut Game<'_>, at: [f32; 2], steps: f32, cla
         s.page = (s.page + if steps > 0.0 { -1 } else { 1 }).rem_euclid(pages);
         *claimed = true;
     });
+}
+
+/// The end of a press on a listed item: over the same item it opens the recipes; over a mod screen it is dropped on
+/// the ghost slot there (a filter), as JEI's ghost ingredient drag does.
+pub(super) fn container_release(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2], button: u8, claimed: &mut bool) {
+    let _ = (window, button);
+    let (x, y) = (at[0] as i32, at[1] as i32);
+    let drag = STATE.with_borrow_mut(|s| s.drag.take());
+    let Some((id, right)) = drag else { return };
+    *claimed = true;
+    let same = STATE.with_borrow(|s| s.hot.iter().any(|(r, i)| i == &id && r.contains(x, y)));
+    if same {
+        STATE.with_borrow_mut(|s| open_recipes(s, &id, if right { Role::Input } else { Role::Output }));
+        return;
+    }
+    if !right && let Some((block, data, local)) = game.native_screen_at() {
+        let stack = horizon_client::items::ItemStack::new(&id, 1);
+        let mut taken = false;
+        game.native_screen_drop(&block, &data, local, &stack, &mut taken);
+    }
 }
