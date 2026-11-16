@@ -94,7 +94,8 @@ impl Registry {
     pub fn add_recipe(&mut self, recipe: CustomRecipe) -> Result<(), PluginError> {
         let c = self.categories.iter().find(|c| c.recipe_type == recipe.recipe_type).ok_or_else(|| PluginError::UnknownCategory(recipe.recipe_type.clone()))?;
         let count = |role| c.layout.slots.iter().filter(|s| s.role == role).count();
-        if c.vanilla.is_none() && (recipe.inputs.len() > count(SlotRole::Input) || recipe.outputs.len() > count(SlotRole::Output)) {
+        // A category without output slots takes invisible outputs (JEI's `addInvisibleIngredients`): found, not drawn.
+        if c.vanilla.is_none() && (recipe.inputs.len() > count(SlotRole::Input) || (count(SlotRole::Output) > 0 && recipe.outputs.len() > count(SlotRole::Output))) {
             return Err(PluginError::TooManySlots(recipe.recipe_type));
         }
         self.recipes.push(recipe);
@@ -114,6 +115,15 @@ mod tests {
             "mekanism:crusher",
             Layout { width: 100, height: 40, slots: vec![view::input(0, 1, 10), view::output(80, 10)], arrow: Some((40, 12)) },
         )
+    }
+
+    #[test]
+    fn invisible_outputs_are_accepted() {
+        let mut r = Registry::default();
+        let layout = Layout { width: 170, height: 125, slots: vec![view::input(0, 77, 1)], arrow: None };
+        r.register_category(CategoryDef::custom("jei:information", "Information", "minecraft:book", layout)).unwrap();
+        let info = CustomRecipe { recipe_type: "jei:information".into(), inputs: vec![vec!["minecraft:stick".into()]], outputs: vec![vec!["minecraft:stick".into()]], notes: vec!["text".into()] };
+        r.add_recipe(info).unwrap();
     }
 
     #[test]
