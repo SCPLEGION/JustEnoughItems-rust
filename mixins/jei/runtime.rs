@@ -66,6 +66,11 @@ struct State {
     plugin_version: u64,
     /// The transfer button of the recipe shown: its rect and the recipe book id.
     transfer: Option<(Rect, i32)>,
+    /// Cheat mode: a click on a listed item gives it (`jei.cheatMode`).
+    cheat: bool,
+    cheat_button: Rect,
+    /// Settings read from the mod's data folder.
+    settings_loaded: bool,
     query: String,
     focused: bool,
     results: Vec<usize>,
@@ -90,6 +95,9 @@ impl State {
             bookmarks: BookmarkList::new(),
             plugin_version: 0,
             transfer: None,
+            cheat: false,
+            cheat_button: Rect::EMPTY,
+            settings_loaded: false,
             query: String::new(),
             focused: false,
             results: Vec::new(),
@@ -225,6 +233,15 @@ fn refilter(state: &mut State) {
 
 /// Every tick: the data, once there is a world.
 pub(super) fn tick(game: &mut Game<'_>) {
+    if STATE.with_borrow(|s| !s.settings_loaded) {
+        let marks = game.native_setting("jei", "bookmarks").unwrap_or_default();
+        let cheat = game.native_setting("jei", "cheat_mode").is_some_and(|v| v == "true");
+        STATE.with_borrow_mut(|s| {
+            s.bookmarks = BookmarkList::load(&marks);
+            s.cheat = cheat;
+            s.settings_loaded = true;
+        });
+    }
     let version = PLUGINS.with_borrow(|p| p.version);
     let needs = STATE.with_borrow(|s| s.data.is_none() || s.plugin_version != version);
     if needs && let Some(d) = game.native_recipes() {
@@ -322,11 +339,16 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         game.native_fill(batch, rect_f(Rect::new(search.x + 1, search.y + 1, search.w - 2, search.h - 2)), if s.focused { 0xFF202020 } else { 0xFF101010 });
         let shown = if s.query.is_empty() && !s.focused { "Search...".to_owned() } else if s.focused && (s.started.elapsed().as_millis() / 500) % 2 == 0 { format!("{}_", s.query) } else { s.query.clone() };
         game.native_text(batch, &shown, [(search.x + 4) as f32, (search.y + 6) as f32], if s.query.is_empty() { 0x909090 } else { TEXT }, false);
+        // The cheat mode toggle, left of the page arrows.
+        let cheat_label = if s.cheat { "Cheat: on" } else { "Cheat: off" };
+        s.cheat_button = Rect::new(search.x, search.y - 18, text_w(game, cheat_label) + 8, 14);
+        game.native_fill(batch, rect_f(s.cheat_button), if s.cheat { 0xFF55AA55 } else { 0xFF555555 });
+        game.native_text(batch, cheat_label, [(s.cheat_button.x + 4) as f32, (s.cheat_button.y + 3) as f32], TEXT, false);
         // Tooltip of the hovered stack.
         if s.view.is_none() {
             let hovered = s.hot.iter().find(|(r, _)| r.contains(cx, cy)).map(|(_, id)| id.clone());
             if let Some(id) = hovered {
-                tooltip(game, batch, s, &id, cx, cy);
+                tooltip(game, batch, &id, cx, cy);
             }
         }
         if s.view.is_some() {
@@ -339,13 +361,9 @@ fn name_of(s: &State, id: &str) -> String {
     s.data.as_ref().and_then(|d| d.items.iter().find(|i| i.id == id)).map(|i| i.name.clone()).unwrap_or_else(|| id.to_owned())
 }
 
-fn tooltip(game: &Game<'_>, batch: &mut HudBatch, s: &State, id: &str, x: i32, y: i32) {
-    let name = name_of(s, id);
-    let w = text_w(game, &name).max(text_w(game, id));
-    let (bx, by) = (x + 12, y - 12);
-    game.native_fill(batch, rect_f(Rect::new(bx - 3, by - 3, w + 6, 26)), 0xF0100010);
-    game.native_text(batch, &name, [bx as f32, by as f32], TEXT, true);
-    game.native_text(batch, id, [bx as f32, (by + 11) as f32], 0x5555FF, true);
+fn tooltip(game: &Game<'_>, batch: &mut HudBatch, id: &str, x: i32, y: i32) {
+    // The game's own tooltip, as hovering the item in a container shows it.
+    game.native_draw_item_tooltip(batch, id, [x as f32, y as f32]);
 }
 
 fn cycle(s: &State, list: &[String]) -> Option<String> {
@@ -436,7 +454,7 @@ fn draw_view(game: &Game<'_>, batch: &mut HudBatch, s: &mut State, cx: i32, cy: 
     game.native_text(batch, &label, [(panel.x + (pw - text_w(game, &label)) / 2) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
     if let Some((_, id)) = hot.iter().find(|(r, _)| r.contains(cx, cy)) {
         let id = id.clone();
-        tooltip(game, batch, s, &id, cx, cy);
+        tooltip(game, batch, &id, cx, cy);
     }
     s.hot = hot;
 }
@@ -499,6 +517,12 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
             return;
         }
         s.focused = false;
+        if s.cheat_button.contains(x, y) {
+            s.cheat = !s.cheat;
+            game.native_set_setting("jei", "cheat_mode", if s.cheat { "true" } else { "false" });
+            *claimed = true;
+            return;
+        }
         if pl.grid.is_empty() {
             return;
         }
@@ -514,7 +538,12 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
             return;
         }
         if let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(x, y)).cloned() {
-            open_recipes(s, &id, if right { Role::Input } else { Role::Output });
+            if s.cheat && pl.grid.contains(x, y) {
+                // Cheat mode: left gives a stack, right one (needs creative mode).
+                let _ = game.native_give(&id, if right { 1 } else { 64 });
+            } else {
+                open_recipes(s, &id, if right { Role::Input } else { Role::Output });
+            }
             *claimed = true;
         }
     });
@@ -557,6 +586,7 @@ pub(super) fn container_key(game: &mut Game<'_>, key: &str, text: Option<&str>, 
             let over = s.hot.iter().find(|(r, _)| r.contains(cx, cy)).map(|(_, id)| id.clone());
             if let Some(id) = over.or(hovered) {
                 s.bookmarks.toggle(&id);
+                game.native_set_setting("jei", "bookmarks", &s.bookmarks.save());
                 *claimed = true;
             }
             return;
