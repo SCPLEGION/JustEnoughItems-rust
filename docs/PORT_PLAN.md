@@ -33,10 +33,10 @@ Config options in `OPTIONS` that nothing reads yet (wire each, then delete from 
 `toastReflowEnabled`, `compactInventoryEffects`, `bookmarkOutputAsRecipe`, `dragToRearrangeBookmarksEnabled`, `bookmarkTooltip*`, `guiResizeEnabled`,
 `dragDelayInMilliseconds`, `smoothScrolling*`, `showTagRecipesEnabled`,
 `enableRecipesGuiIngredientsSummary`, `tagContentTooltip*`, `lookupFluidContentsEnabled`,
-`lookupBlockTagsEnabled`, lookup history `displaySide`, `giveMode`,
-`cheatToHotbarUsingHotkeysEnabled`, `showHiddenIngredients`, `recipeSyncWarningEnabled`.
-Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredientSortStages`, `bookmarkAddPosition`,
-`recipeGuiHeight`, `recipeGuiWidth`.
+`lookupBlockTagsEnabled`, lookup history `displaySide`,
+`cheatToHotbarUsingHotkeysEnabled`, `recipeSyncWarningEnabled`.
+Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredientSortStages`, `bookmarkAddPosition`
+(`recipeGuiHeight`/`recipeGuiWidth` and `showHiddenIngredients` are done.)
 
 Keybinds: the keyboard mappings of `InternalKeyMappings` are registered on Options > Controls (`jei-core::keys`) and
 dispatched from the bound keys: `toggleOverlay`, `focusSearch`, `previousPage`/`nextPage`, `bookmark`, `showRecipe`,

@@ -373,7 +373,7 @@ fn refilter(s: &mut State) {
     if let Some(search) = &s.search {
         s.results = search.query(&s.query);
     }
-    if !s.edit {
+    if !s.edit && !s.config.bool("cheating", "showHiddenIngredients") {
         let (hidden, ids) = (&s.hidden, &s.ids);
         s.results.retain(|&i| ids.get(i).is_none_or(|id| !is_hidden(hidden, id)));
     }
@@ -499,10 +499,10 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     let (cx, cy) = (screen.mouse[0] as i32, screen.mouse[1] as i32);
 
     // The stations and option tabs reach left of the panel and narrow what the screen may take (`getLeftSideExtraWidth`).
-    let first_ideal = recipe_gui::ideal_area(bw, bh, recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, 0);
+    let first_ideal = recipe_gui::ideal_area(bw, bh, s.config.int("recipes", "recipeGuiWidth") as i32, s.config.int("recipes", "recipeGuiHeight") as i32, 0);
     let (first_options, _) = recipe_gui::option_buttons(first_ideal, 2);
     let extra = recipe_gui::left_extra_width(recipe_gui::stations(cat.stations.len(), first_ideal, first_options).as_ref(), first_options);
-    let ideal = recipe_gui::ideal_area(bw, bh, recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, extra);
+    let ideal = recipe_gui::ideal_area(bw, bh, s.config.int("recipes", "recipeGuiWidth") as i32, s.config.int("recipes", "recipeGuiHeight") as i32, extra);
     let nav = recipe_gui::navigation(ideal);
     let first = ui_at(0);
     let layout_of = |u: Option<&recipes::UiRecipe>| cat.layout_for(u.map_or((3, 3), |u| u.grid), u.map_or(0, |u| u.inputs.len()));
@@ -720,7 +720,7 @@ fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
                 }
             }
             Hit::TabsPrevious | Hit::TabsNext => {
-                let per_tabs = ((recipe_gui::ideal_area(s.screen_size[0], s.screen_size[1], recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, 0).w - 4) / recipe_gui::TAB_WIDTH).max(1) as usize;
+                let per_tabs = ((recipe_gui::ideal_area(s.screen_size[0], s.screen_size[1], s.config.int("recipes", "recipeGuiWidth") as i32, s.config.int("recipes", "recipeGuiHeight") as i32, 0).w - 4) / recipe_gui::TAB_WIDTH).max(1) as usize;
                 let tab_pages = cats.div_ceil(per_tabs).max(1);
                 let page = s.tab_page.unwrap_or(0);
                 s.tab_page = Some(if matches!(hit, Hit::TabsNext) { (page + 1) % tab_pages } else { (page + tab_pages - 1) % tab_pages });
