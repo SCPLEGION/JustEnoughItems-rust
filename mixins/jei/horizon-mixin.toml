@@ -1,0 +1,12 @@
+[mod]
+id = "jei"
+version = "0.1.0"
+priority = 100
+
+[compatibility]
+horizon_revision = "7badddf47d06b30f15b17ca3de4c950f9e11c268"
+
+# All of JEI's logic: a plain crate staged into Horizon's workspace (horizon-mixins bundle crates).
+[[crate]]
+id = "core"
+path = "core"

@@ -1,0 +1,8 @@
+# JEI for Horizon: the Rust port.
+#
+# The Java sources (Common/, Library/, Gui/, ...) stay as the reference and the behaviour oracle. The Rust lives in
+# mixins/jei/: a horizon-mixins bundle (hooks and glue compiled inside Horizon's game crate) and its bundle crate
+# `jei-core` (JEI's logic, no Horizon dependency, tested on its own).
+[workspace]
+members = ["mixins/jei/core"]
+resolver = "2"
