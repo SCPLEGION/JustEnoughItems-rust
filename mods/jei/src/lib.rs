@@ -11,7 +11,7 @@ use jei_core::{
 };
 use mod_api::{
     self, ClientHost, DrawContext, Hooks, ItemKey, ItemStack, ScreenCharTypedPreEvent, ScreenKeyPressedPreEvent,
-    ScreenMouseButtonPressedPreEvent, ScreenMouseScrolledPreEvent, ClientTickPostEvent, Flow, ScreenRenderPostEvent, ScreenView,
+    ScreenMouseButtonPressedPreEvent, ScreenMouseScrolledPreEvent, ClientTickPostEvent, Flow, ScreenRenderPostEvent, ScreenView, Text,
 };
 mod recipes;
 
@@ -520,6 +520,15 @@ impl Hooks for Mod {
                 draw_options(s, draw);
             }
             draw_view(s, draw, screen);
+            // The tooltip of the ingredient under the cursor: its name and the mod it is from.
+            if !s.options
+                && let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(cx, cy))
+                && let Some(&k) = s.index.get(id)
+            {
+                let name = ItemStack::new(s.keys[k], 1).map_or_else(|| id.clone(), |st| host.hover_name(&st));
+                let ns = id.split_once(':').map_or("minecraft", |p| p.0);
+                let _ = draw.gui_tooltip(&[Text::literal(name), Text::literal(mod_name(ns))], [cx as f32, cy as f32]);
+            }
         });
     }
 
