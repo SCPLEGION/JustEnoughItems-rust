@@ -16,6 +16,7 @@ use mod_api::{
     self, ClientHost, DrawContext, Hooks, ItemKey, ItemStack, ScreenCharTypedPreEvent, ScreenKeyPressedPreEvent,
     ScreenMouseButtonPressedPreEvent, ScreenMouseScrolledPreEvent, ClientTickPostEvent, Flow, ScreenRenderPostEvent, ScreenView, Text,
 };
+pub mod api;
 mod recipes;
 
 use std::{cell::RefCell, collections::HashMap, time::Instant};
@@ -71,6 +72,9 @@ struct State {
     /// A transfer the click asked for (recipe, all sets), done in the next client tick.
     pending_transfer: Option<(String, bool)>,
     screen_size: [i32; 2],
+    /// The item keys by id, kept to rebuild the recipes when a plugin registers more.
+    names: HashMap<ItemKey, String>,
+    plugin_version: u64,
     /// `jei-client.toml`, kept as one setting.
     config: Config,
     /// The recipes looked up, newest first (`LookupHistory`), saved when `lookups_dirty`.
@@ -307,6 +311,8 @@ fn load(host: &dyn ClientHost, s: &mut State) {
         s.ids.push(id);
     }
     s.recipes = Some(recipes::load(host, &names));
+    s.plugin_version = api::version();
+    s.names = names;
     build_search(s);
     s.loaded = true;
     refilter(s);
@@ -517,6 +523,12 @@ impl Hooks for Mod {
             }
             if !s.loaded {
                 return;
+            }
+            if s.plugin_version != api::version() {
+                s.recipes = Some(recipes::load(host, &s.names));
+                s.plugin_version = api::version();
+                s.view = None;
+                s.history.clear();
             }
             let [bw, bh] = draw.size();
             let (bw, bh) = (bw as i32, bh as i32);
@@ -828,5 +840,87 @@ impl Hooks for Mod {
                 Flow::Continue
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modes_round_trip() {
+        for m in [SearchMode::Enabled, SearchMode::RequireManualPrefix, SearchMode::Disabled] {
+            assert_eq!(parse_mode(mode_name(m), SearchMode::Enabled), m);
+        }
+        assert_eq!(parse_mode("junk", SearchMode::Disabled), SearchMode::Disabled);
+        assert_eq!(next_mode(next_mode(next_mode(SearchMode::Enabled))), SearchMode::Enabled);
+    }
+
+    #[test]
+    fn hidden_matches_item_or_wildcard() {
+        let hidden = vec!["minecraft:dirt".to_owned(), "*minecraft:stone".to_owned()];
+        assert!(is_hidden(&hidden, "minecraft:dirt"));
+        assert!(is_hidden(&hidden, "minecraft:stone"));
+        assert!(!is_hidden(&hidden, "minecraft:sand"));
+        assert!(!is_hidden(&hidden, "*minecraft:dirt"));
+    }
+
+    #[test]
+    fn lines_skip_blanks() {
+        assert_eq!(lines(Some(" a \n\n b\n".into())), ["a", "b"]);
+        assert!(lines(None).is_empty());
+    }
+
+    fn completing(query: &str) -> State {
+        let mut s = State::default();
+        s.query = query.into();
+        s.focused = true;
+        s.config.set("search", "searchCompletionEnabled", "true");
+        s.views = vec![PrefixView {
+            prefix: '@',
+            mode: SearchMode::RequireManualPrefix,
+            dynamic: true,
+            description: "modName".into(),
+            strings: vec!["mekanism".into(), "minecraft".into()],
+        }];
+        s
+    }
+
+    #[test]
+    fn completion_is_off_without_the_option_or_focus() {
+        let mut s = completing("@m");
+        s.focused = false;
+        assert!(suggestions(&s).is_empty());
+        let mut s = completing("@m");
+        s.config.set("search", "searchCompletionEnabled", "false");
+        assert!(suggestions(&s).is_empty());
+    }
+
+    #[test]
+    fn tab_replaces_the_last_token() {
+        let mut s = completing("dirt @me");
+        let c = suggestions(&s).first().cloned().expect("a candidate");
+        assert_eq!(c.insertion, "@mekanism");
+        accept(&mut s, &c);
+        assert_eq!(s.query, "dirt @mekanism");
+    }
+
+    #[test]
+    fn tab_keeps_the_negation() {
+        let mut s = completing("-@mi");
+        let c = suggestions(&s).first().cloned().expect("a candidate");
+        accept(&mut s, &c);
+        assert_eq!(s.query, "-@minecraft");
+    }
+
+    #[test]
+    fn lookups_are_bounded_and_newest_first() {
+        let mut h = LookupHistory::new(10);
+        for i in 0..12 {
+            h.add(&format!("minecraft:i{i}"));
+        }
+        h.add("minecraft:i5");
+        assert_eq!(h.items().len(), 10);
+        assert_eq!(h.items()[0], "minecraft:i5");
     }
 }

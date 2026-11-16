@@ -186,5 +186,31 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         let note = format!("Chance: {}%", (chance * 100.0).floor() as i32);
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
     }
+    // Categories and recipes other mods registered through `api` (`IModPlugin`).
+    let plugins = crate::api::snapshot();
+    for def in plugins.categories {
+        if !cats.iter().any(|c| c.recipe_type == def.recipe_type) {
+            register(&mut mgr, &mut cats, def);
+        }
+    }
+    for r in plugins.recipes {
+        let id_of = |s: &String| jei_core::plugin::split_ingredient(s).0.to_owned();
+        let inputs: Vec<Vec<String>> = r.inputs.iter().map(|slot| slot.iter().map(id_of).collect()).collect();
+        let outputs: Vec<String> = r.outputs.first().map(|slot| slot.iter().map(id_of).collect()).unwrap_or_default();
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: r.recipe_type, note: r.notes.join(" "), grid: (1, 1), inputs, outputs });
+    }
     Recipes { mgr, cats, ui }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trims_floats() {
+        assert_eq!(trim_float(1.0), "1");
+        assert_eq!(trim_float(1.5), "1.5");
+        assert_eq!(trim_float(0.125), "0.12"); // half-even, as `NumberFormat`
+        assert_eq!(trim_float(7.5), "7.5");
+    }
 }
