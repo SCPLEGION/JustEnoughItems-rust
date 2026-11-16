@@ -1,10 +1,11 @@
+# Legacy bundle, unused by the native mod (mods/jei). The pin names the SCPLEGION/horizon main that carries the helpers.
 [mod]
 id = "jei"
 version = "0.1.0"
 priority = 100
 
 [compatibility]
-horizon_revision = "90d666c1ad39982255bf09fdf057a48615f9410b"
+horizon_revision = "04d81384506100f21a6e995d28fcc154a0ad9224"
 
 # All of JEI's logic: a plain crate staged into Horizon's workspace (horizon-mixins bundle crates).
 [[crate]]
