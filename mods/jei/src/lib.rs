@@ -5,7 +5,7 @@ use jei_core::{
     recipes::{Focus, RecipeId, Role},
     view::SlotRole,
     bookmarks::BookmarkList,
-    highlight,
+    highlight, keys,
     completion::{self, Candidate, PrefixView},
     config::Config,
     history::LookupHistory,
@@ -684,8 +684,26 @@ fn rect_f(r: Rect) -> [f32; 4] {
 #[derive(Default)]
 struct Mod;
 
+/// The action of the key just pressed, from the keys the player has bound (`host.mod_key`).
+fn key_action(host: &dyn ClientHost, key: &str, modifiers: u32, in_recipes: bool) -> Option<keys::Action> {
+    keys::MAPPINGS.iter().filter(|m| m.in_recipes == in_recipes || !m.in_recipes).find_map(|m| {
+        let (bound, mods) = host.mod_key("jei", &keys::registered_id(m))?;
+        let mods = mods.bits & (keys::SHIFT | keys::CONTROL | keys::ALT);
+        (bound == key && mods == modifiers & (keys::SHIFT | keys::CONTROL | keys::ALT)).then_some(m.action)
+    })
+}
+
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        // `InternalKeyMappings`: each mapping on Options > Controls under its Java label.
+        for m in keys::MAPPINGS {
+            let mut reg = mod_api::KeyRegistration::new(&keys::registered_id(m), m.key).label(m.id);
+            reg.modifiers = mod_api::ClientModifiers::new(m.modifiers);
+            r.register_key_mapping(reg);
+        }
+    }
+
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut ScreenRenderPostEvent<'_>) {
         if !shows_over(event.screen) {
             return;
@@ -1005,19 +1023,66 @@ impl Hooks for Mod {
             if !s.loaded {
                 return Flow::Continue;
             }
-            if !s.focused {
-                match event.key {
-                    "key.keyboard.backspace" if s.view.is_some() => {
-                        // `HistoryList`: Backspace goes back to the earlier recipe view, then closes.
+            let action = key_action(host, event.key, event.modifiers, s.view.is_some());
+            if !s.focused || action == Some(keys::Action::FocusSearch) {
+                use keys::Action;
+                match action {
+                    Some(Action::FocusSearch) => {
+                        s.focused = true;
+                        return Flow::Cancel;
+                    }
+                    Some(Action::ToggleOverlay) => {
+                        let on = !s.config.bool("ingredientList", "overlaysEnabled");
+                        s.config.set("ingredientList", "overlaysEnabled", if on { "true" } else { "false" });
+                        s.config_dirty = true;
+                        return Flow::Cancel;
+                    }
+                    Some(Action::ToggleCheatMode) => {
+                        s.cheat = !s.cheat;
+                        return Flow::Cancel;
+                    }
+                    Some(Action::PreviousPage | Action::NextPage) if s.view.is_none() => {
+                        let per = (grid::calculate_slots(s.grid, &[], None, 0).len() as i32).max(1);
+                        let pages = grid::page_count(s.results.len() as i32, per).max(1);
+                        s.page = (s.page + if action == Some(Action::NextPage) { 1 } else { pages - 1 }).rem_euclid(pages);
+                        return Flow::Cancel;
+                    }
+                    Some(Action::RecipeBack) if s.view.is_some() => {
+                        // `HistoryList`: goes back to the earlier recipe view, then closes.
                         s.view = s.history.pop();
                         return Flow::Cancel;
                     }
-                    "key.keyboard.escape" if s.view.is_some() => {
+                    Some(Action::CloseRecipeGui) if s.view.is_some() => {
                         s.view = None;
                         s.history.clear();
                         return Flow::Cancel;
                     }
-                    "key.keyboard.a" => {
+                    Some(a @ (Action::PreviousRecipePage | Action::NextRecipePage)) if s.view.is_some() => {
+                        let (scrolled, step) = (s.config.text("recipes", "navigationMode") == "SCROLLED", s.recipe_columns.max(1));
+                        let per = s.per_page.max(1);
+                        let pages = grid::page_count(s.view.as_ref().map_or(0, |v| v.recipes.len()) as i32, per).max(1) as usize;
+                        let next = a == Action::NextRecipePage;
+                        if let Some(v) = s.view.as_mut() {
+                            if scrolled {
+                                scroll_recipes(v, if next { 1 } else { -1 }, step, per);
+                            } else {
+                                v.page = if next { (v.page + 1) % pages } else { (v.page + pages - 1) % pages };
+                            }
+                        }
+                        return Flow::Cancel;
+                    }
+                    Some(a @ (Action::PreviousCategory | Action::NextCategory)) if s.view.is_some() => {
+                        let cats = s.view.as_ref().map_or(0, |v| v.cats.len());
+                        if cats > 0 {
+                            let cat = s.view.as_ref().map_or(0, |v| v.cat);
+                            select_category(s, if a == Action::NextCategory { (cat + 1) % cats } else { (cat + cats - 1) % cats });
+                        }
+                        return Flow::Cancel;
+                    }
+                    _ => {}
+                }
+                match action {
+                    Some(Action::Bookmark) => {
                         // `jei.key.bookmark` (A): bookmark the ingredient under the cursor, or remove it.
                         let (x, y) = (event.screen.mouse[0] as i32, event.screen.mouse[1] as i32);
                         if let Some((_, id)) = s.hot.iter().find(|(r, _)| r.contains(x, y)).cloned() {
@@ -1026,14 +1091,14 @@ impl Hooks for Mod {
                             return Flow::Cancel;
                         }
                     }
-                    "key.keyboard.r" | "key.keyboard.u" => {
+                    Some(Action::ShowRecipe | Action::ShowUses) => {
                         // `jei.key.showRecipe` (R) and `jei.key.showUses` (U) on the stack under the cursor.
                         let (x, y) = (event.screen.mouse[0] as i32, event.screen.mouse[1] as i32);
                         let over = s.hot.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| id.clone()).or_else(|| {
                             host.screen_hovered_stack().map(|st| st.item()).and_then(|k| s.keys.iter().position(|x| *x == k)).map(|i| s.ids[i].clone())
                         });
                         if let Some(id) = over {
-                            open_recipes(s, &id, if event.key == "key.keyboard.r" { Role::Output } else { Role::Input });
+                            open_recipes(s, &id, if action == Some(Action::ShowRecipe) { Role::Output } else { Role::Input });
                             return if s.view.is_some() { Flow::Cancel } else { Flow::Continue };
                         }
                     }

@@ -25,7 +25,7 @@ has been run in game yet; everything is type-checked against the fork's `horizon
   compost, anvil; plugin API (`jei::api`: categories, catalysts, recipes) for other mods (info recipes come through it).
 - **Bookmarks** (toggle with A, saved), history of lookups, `jei-client.toml` option table (`jei-core::config`) with the
   options screen on the config button.
-- **Keys**: R, U, A, Backspace, Esc, Tab (search), Enter.
+- **Keys**: see Keybinds below; Tab and Enter in the search box.
 
 ## Open, from the audit against the Java source
 
@@ -39,13 +39,13 @@ Config options in `OPTIONS` that nothing reads yet (wire each, then delete from 
 Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredientSortStages`, `bookmarkAddPosition`,
 `recipeGuiHeight`, `recipeGuiWidth`.
 
-Keybinds of the Java mod not bound (all `key.jei.*`): `toggleOverlay`, `toggleBookmarkOverlay`, `focusSearch`,
-`clearSearchBar`, `previousSearch`/`nextSearch`, `previousPage`/`nextPage`, `previousCategory`/`nextCategory`,
-`previousRecipePage`/`nextRecipePage`, `recipeBack`/`recipeForward`, `closeRecipeGui`, `bookmark` (A is bound),
-`toggleCheatMode`, `toggleCheatModeConfigButton`, `toggleEditMode`, `toggleHideIngredient`,
-`toggleWildcardHideIngredient`, `toggleHideIngredientsWhenNotSearching`, `cheatItemStack`, `cheatOneItem` (and the
-`ToInventory` variants), `quickMove`, `transferRecipeBookmark`, `maxTransferRecipeBookmark`, `pauseRecipeCycling`,
-`copy.recipe.id`, `shareToChat`. They need the keybinding list of the mod API (or fixed keys with a settings entry).
+Keybinds: the keyboard mappings of `InternalKeyMappings` are registered on Options > Controls (`jei-core::keys`) and
+dispatched from the bound keys: `toggleOverlay`, `focusSearch`, `previousPage`/`nextPage`, `bookmark`, `showRecipe`,
+`showUses`, `toggleCheatMode`, `recipeBack`, `previousRecipePage`/`nextRecipePage`, `previousCategory`/`nextCategory`,
+`closeRecipeGui`. Still unbound: `previousSearch`/`nextSearch` (the search history is not recorded in the glue),
+`toggleBookmarkOverlay`, `toggleEditMode`, `recipeForward`, the mouse mappings as keys (cheat give variants,
+`quickMove`, `transferRecipeBookmark`, `maxTransferRecipeBookmark`, `toggleHideIngredient*`, `clearSearchBar`),
+`pauseRecipeCycling`, `copy.recipe.id`, `shareToChat`.
 
 Screens and behaviour:
 1. **Brewing category**: waits for a `brewing_recipes()` helper on the fork (requested).
