@@ -277,7 +277,8 @@ thread_local! {
 
 /// The screens the list shows over: the inventory screen draws every container, and the creative one.
 fn shows_over(screen: &ScreenView<'_>) -> bool {
-    matches!(screen.id, "inventory" | "creative")
+    // `overlaysEnabled`: off hides the whole list.
+    matches!(screen.id, "inventory" | "creative") && STATE.with(|c| c.try_borrow().is_ok_and(|s| s.config.bool("ingredientList", "overlaysEnabled")))
 }
 
 fn mod_name(namespace: &str) -> String {
@@ -385,6 +386,10 @@ fn select_category(s: &mut State, cat: usize) {
 fn cycle(s: &State, list: &[String]) -> Option<String> {
     if list.is_empty() {
         return None;
+    }
+    // `recipeSlotCyclingEnabled`: off keeps the first ingredient.
+    if !s.config.bool("input", "recipeSlotCyclingEnabled") {
+        return Some(list[0].clone());
     }
     let ms = s.started.map_or(0, |t| t.elapsed().as_millis());
     Some(list[(ms / CYCLE_MS) as usize % list.len()].clone())
@@ -596,10 +601,12 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     s.hot = hot;
     // `LookupHistory`: the recipes looked up lately, under the panel; a click opens that item's recipes.
     s.lookup_rects.clear();
-    let per_row = ((area.w - 4) / 18).max(1) as usize;
-    for (i, id) in s.lookups.items().iter().take(per_row).enumerate() {
+    // Shown when `lookups.enabled`, in at most `maxRows` rows of `maxColumns` (and what fits under the panel).
+    let per_row = (((area.w - 4) / 18).max(1) as usize).min(s.config.int("lookups", "maxColumns") as usize);
+    let rows = if s.config.bool("lookups", "enabled") { s.config.int("lookups", "maxRows") as usize } else { 0 };
+    for (i, id) in s.lookups.items().iter().take(per_row * rows).enumerate() {
         let Some(&k) = s.index.get(id) else { continue };
-        let rect = Rect::new(area.x + 2 + i as i32 * 18, area.y + area.h + 4, 18, 18);
+        let rect = Rect::new(area.x + 2 + (i % per_row) as i32 * 18, area.y + area.h + 4 + (i / per_row) as i32 * 18, 18, 18);
         ui::slot(draw, rect);
         draw.item(s.keys[k], [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
         s.lookup_rects.push((rect, id.clone()));

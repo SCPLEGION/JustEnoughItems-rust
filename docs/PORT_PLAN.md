@@ -1,50 +1,69 @@
 # JEI on Horizon: port plan
 
-JEI (Java, MC 26.3, MIT) becomes a Horizon **native mod**: a horizon-mixins bundle in `mixins/jei/` plus a game-free
-crate `jei-core` (all logic, unit-tested alone), the same shape as Mekanism-rust. The Java tree stays as the spec.
-Horizon already has a basic item panel (API 2: `native_panel_items`, `native_panel_recipes`, `native_panel_event`,
-`native_recipes`, `native_screen_drop`); it draws fixed recipe layouts (<= 3x3), so a faithful JEI needs more generic hooks.
-Horizon changes stay generic (never JEI-specific) and go to SCPLEGION/horizon as their own PRs.
+JEI (Java, MC 26.3, MIT) is a Horizon **native mod** in `mods/jei/` (crate `mod-jei`, `horizon-mod.toml`), on the mod API
+(`#[mod_api::horizon_mod] impl Hooks`). All logic that needs no game lives in `mods/jei/core` (`jei-core`, `cargo test`,
+63 tests). The Java tree stays as the spec. The old `mixins/jei/` bundle is unused. Horizon helpers the mod needs are
+added to the SCPLEGION/horizon fork (the `[native] horizon` pin points at it); nothing is opened on the official repo
+without the user.
 
-## Milestones (one commit group each, in order; parallel where independent)
+Faithfulness rules: port behaviour, strings and layout numbers exactly; no simplifications that diverge. Nothing here
+has been run in game yet; everything is type-checked against the fork's `horizon-mod-api` and unit-tested in `jei-core`.
 
-| # | Milestone | Where | Java source |
-|---|---|---|---|
-| J0 | Scaffold: workspace, bundle, `jei-core` | this repo | n/a |
-| J1 | Search: tokenizer, prefix table (done), query parse (`\|`, `-`, quotes), index + matching, sort order | core | `Gui/.../search`, `Common/.../search` |
-| J2 | Ingredient model: ingredient types, registry, visibility/blacklist, list elements, mod names, tags, tooltips, colours | core | `Library/.../ingredients`, `Gui/.../ingredients` |
-| J3 | Plugin API in Rust: categories, recipe registration, recipe maps/lookups (focus, input/output/catalyst), vanilla plugin data (crafting, smelting, stonecutting, smithing, anvil, brewing, fuel, info) | core | `Common/src/api`, `Library/.../recipes`, `plugins/vanilla` |
-| H1 | Horizon: container overlay hooks (draw/click/key/typing/wheel over any container screen; screen rect + exclusion areas; arbitrary ingredient render + tooltip) | horizon | n/a |
-| J4 | Ingredient list overlay: grid, paging, search box, config button, hover, click to open recipes, cheat-give | bundle + core | `Gui/.../overlay` |
-| J5 | Recipe GUI: category tabs, pages, layouts drawn by categories (slots, drawables, arrows, flames, progress), focus history, catalysts, recipe transfer (+) | bundle + core | `Gui/.../recipes`, `Library/.../gui` |
-| J6 | Bookmarks, config (`jei` options), keybinds (R, U, A, O, ...), ghost-ingredient drag into filter slots | bundle + core | `Gui/.../bookmarks`, `config`, `input` |
-| J7 | Plugin registration for other native mods + Mekanism-rust plugin (its recipe categories) | core + Mekanism-rust | `IModPlugin` |
+## Done
 
-Faithfulness rules: port behaviour, strings (lang keys) and layout numbers exactly; no simplifications that diverge.
-Search storage uses plain in-memory substring indexes instead of Lucene (same results: literal, case-sensitive substring
-on JEI's already lowercased keys).
+- **Search**: tokenizer, prefixes (`@ # $ % ^ &`), `|`, `-`, quotes, syntax highlight, history (Up/Down), completion
+  candidates and dropdown (`searchCompletionEnabled`, `maxSearchCompletionRows`).
+- **Ingredient list overlay**: grid layout from `overlay_layout` (border margins, nav row, buttons), paging, hover,
+  tooltip (name, creative tooltip lines, mod), hide-mode (Ctrl+click), cheat mode (Shift+click on the config button),
+  creative-tab stacks for tooltips and `%tab` search.
+- **Recipe screen** (`recipe_gui`): panel, category tabs and tab paging, category and page arrows, title, grid with
+  `maxRecipeGuiColumns`, recipe backgrounds, slot cycling, notes, transfer (+) button (left once, right max), bookmark
+  button, crafting stations tab (click opens that item's recipes), option buttons tab (bookmarks first / craftable
+  first), lookup history under the panel, wheel navigation, `navigationMode = SCROLLED`.
+- **Textures**: the real JEI sprites ship as mod assets (`assets/jei/textures/gui/sprites`), with a fill fallback.
+- **Categories**: crafting, smelting, smoking, blasting, campfire, stonecutting, smithing (transform and trim), fuel,
+  compost, anvil; plugin API (`jei::api`: categories, catalysts, recipes) for other mods (info recipes come through it).
+- **Bookmarks** (toggle with A, saved), history of lookups, `jei-client.toml` option table (`jei-core::config`) with the
+  options screen on the config button.
+- **Keys**: R, U, A, Backspace, Esc, Tab (search), Enter.
 
-## Status (updated after the first working version)
+## Open, from the audit against the Java source
 
-Done: J0 scaffold, J1 search, J2 ingredient strings, J3 recipe manager, H1 container overlay hooks (Horizon API 87),
-game tooltip (88), release hook for ghost drag (89), anvil recipe data (90), ingredient grid layout, vanilla category layouts
-(crafting, furnace types, campfire, stonecutting, smithing, brewing, anvil), recipe view with tabs/paging/history,
-R/U/A/Backspace keys, bookmarks (saved), cheat mode, options (search modes, grid size), recipe transfer (+), plugin
-registry for other mods, ghost-ingredient drag into mod screens, ingredient variants (creative-tab stacks, Horizon API 91/92),
-smithing trim recipes with trimmed results, information category (`jei::add_info`, description wrapped, no scrolling yet),
-smelting/smoking/blasting fuel and composting categories (API 93; text is drawn under the layout, not inside it yet).
+Config options in `OPTIONS` that nothing reads yet (wire each, then delete from this list):
+`toastReflowEnabled`, `compactInventoryEffects`, `hideIngredientsWhenNotSearching`, `maxColumns`/`maxRows`
+(grid size), `bookmarkOutputAsRecipe`, `dragToRearrangeBookmarksEnabled`, `bookmarkTooltip*`, `guiResizeEnabled`,
+`dragDelayInMilliseconds`, `smoothScrolling*`, `showTagRecipesEnabled`,
+`enableRecipesGuiIngredientsSummary`, `showCreativeTabNamesEnabled`, `tagContentTooltip*`, `lookupFluidContentsEnabled`,
+`lookupBlockTagsEnabled`, lookup history `displaySide`, `giveMode`,
+`cheatToHotbarUsingHotkeysEnabled`, `showHiddenIngredients`, `recipeSyncWarningEnabled`.
+Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredientSortStages`, `bookmarkAddPosition`,
+`recipeGuiHeight`, `recipeGuiWidth`.
 
-Not tested in game yet (no Minecraft resources in the build container).
+Keybinds of the Java mod not bound (all `key.jei.*`): `toggleOverlay`, `toggleBookmarkOverlay`, `focusSearch`,
+`clearSearchBar`, `previousSearch`/`nextSearch`, `previousPage`/`nextPage`, `previousCategory`/`nextCategory`,
+`previousRecipePage`/`nextRecipePage`, `recipeBack`/`recipeForward`, `closeRecipeGui`, `bookmark` (A is bound),
+`toggleCheatMode`, `toggleCheatModeConfigButton`, `toggleEditMode`, `toggleHideIngredient`,
+`toggleWildcardHideIngredient`, `toggleHideIngredientsWhenNotSearching`, `cheatItemStack`, `cheatOneItem` (and the
+`ToInventory` variants), `quickMove`, `transferRecipeBookmark`, `maxTransferRecipeBookmark`, `pauseRecipeCycling`,
+`copy.recipe.id`, `shareToChat`. They need the keybinding list of the mod API (or fixed keys with a settings entry).
 
-## Audit against the Java source: gaps still open
-
-1. **Config file in the glue.** `jei-core::config` has the option table of `ClientConfig` (with Java's names, ranges and defaults) and
-   reads and writes `jei-client.toml`; the glue still keeps its few options (search modes, grid size, cheat mode) as separate
-   settings and does not use it yet. Hide ingredients mode is done.
-2. **Search completion overlay and the history list's display.** The candidates (`jei-core::completion`) and the history
-   (`jei-core::history`, recorded and saved) are ported; nothing draws them yet. Syntax highlighting is done.
-3. **Recipe view fidelity**: JEI's background sprites, animated arrow/flame/bubbles, slot backgrounds, focus highlight of the
-   focused ingredient, recipe category sorting config, "recipe bookmarks", catalysts column.
-4. **Mod names / aliases**: real mod display names (now derived from the namespace) and `modAliases`.
-5. **Language**: category titles are English; read the game's language.
-6. **Mekanism plugin**: Mekanism-rust is paused; its recipe categories would call `jei::register_category` / `add_recipe`.
+Screens and behaviour:
+1. **Brewing category**: waits for a `brewing_recipes()` helper on the fork (requested).
+2. **Grindstone category** (`plugins/vanilla/grindstone`): no helper; needs the grindstone rules (a host helper or a
+   port of `GrindstoneRecipeMaker`).
+3. **Fuel per furnace type** (smoking/blasting speeds) and the fuel and compost layouts drawn inside the layout
+   (the text is under it now).
+4. **Recipe bookmarks**: bookmarks store ingredients only; `bookmarkOutputAsRecipe` and the bookmark list's recipe
+   entries, tooltip preview, drag to rearrange, transfer keys.
+5. **Ghost ingredient drag** into mod screens: needs `screen_drop` and `screen_item_dropped_pre` on the fork
+   (postponed until Mekanism resumes).
+6. **Recipe screen**: GUI resize handles (`guiResizeEnabled`), `recipeGuiHeight/Width`, ingredient summary, focus
+   highlight of the focused ingredient, the recipe-id copy and "recipe source" tooltips, scroll smoothing.
+7. **Ingredient types beyond items**: fluids and other mods' types (needs the API's ingredient-type registry).
+8. **Inventory integration**: shift to exclusion areas of the inventory effects, the recipe book and toasts
+   (`toastReflowEnabled`, `compactInventoryEffects`), cheat give modes, `quickMove`.
+9. **Sort stages** for the ingredient list (`ingredientSortStages`) and recipe sorting by bookmarks/craftable (the
+   options toggle the setting; the list is not reordered yet).
+10. **Language**: titles and strings are English; read the game's language files.
+11. **Real run**: needs the `mixins` pin from `cargo horizon-mod new` and a prebuilt game; then fix whatever the first
+    in-game run shows (sprite names and atlas packing of mod assets are unverified).
