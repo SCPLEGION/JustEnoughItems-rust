@@ -38,10 +38,11 @@ Not tested in game yet (no Minecraft resources in the build container).
 
 ## Audit against the Java source: gaps still open
 
-1. **Config file** (`jei-client.toml` with the full option set). Hide ingredients mode is done (options screen toggle, Ctrl+click
-   hides, Ctrl+right-click hides all variants, saved in the mod's settings); the rest of the options are not.
-2. **Search completion overlay** (`SearchCompletionOverlay`) and the **history list's display** (the lookup history is recorded
-   and saved, `jei-core::history`; nothing draws it yet). Syntax highlighting is done (`jei-core::highlight`).
+1. **Config file in the glue.** `jei-core::config` has the option table of `ClientConfig` (with Java's names, ranges and defaults) and
+   reads and writes `jei-client.toml`; the glue still keeps its few options (search modes, grid size, cheat mode) as separate
+   settings and does not use it yet. Hide ingredients mode is done.
+2. **Search completion overlay and the history list's display.** The candidates (`jei-core::completion`) and the history
+   (`jei-core::history`, recorded and saved) are ported; nothing draws them yet. Syntax highlighting is done.
 3. **Recipe view fidelity**: JEI's background sprites, animated arrow/flame/bubbles, slot backgrounds, focus highlight of the
    focused ingredient, recipe category sorting config, "recipe bookmarks", catalysts column.
 4. **Mod names / aliases**: real mod display names (now derived from the namespace) and `modAliases`.
