@@ -5,6 +5,9 @@ use jei_core::{
     view::SlotRole,
     bookmarks::BookmarkList,
     highlight,
+    completion::{self, Candidate, PrefixView},
+    config::Config,
+    history::LookupHistory,
     ingredient::{FilterConfig, IngredientData, ListElementInfo},
     prefix::{default_mode, SearchIndex, SearchMode, PREFIXES},
     search::ElementSearch,
@@ -68,6 +71,14 @@ struct State {
     /// A transfer the click asked for (recipe, all sets), done in the next client tick.
     pending_transfer: Option<(String, bool)>,
     screen_size: [i32; 2],
+    /// `jei-client.toml`, kept as one setting.
+    config: Config,
+    /// The recipes looked up, newest first (`LookupHistory`), saved when `lookups_dirty`.
+    lookups: LookupHistory,
+    lookups_dirty: bool,
+    lookup_rects: Vec<(Rect, String)>,
+    /// The search indexes as the completion reads them.
+    views: Vec<PrefixView>,
 }
 
 /// The option rows of the options screen.
@@ -126,11 +137,47 @@ fn build_search(s: &mut State) {
         search.add(i, |idx: SearchIndex| info.strings(idx, &cfg));
     }
     s.search = Some(search);
+    s.views = PREFIXES
+        .iter()
+        .map(|p| {
+            let mut strings: Vec<String> = s.infos.iter().flat_map(|i| i.strings(p.index, &cfg)).collect();
+            strings.sort();
+            strings.dedup();
+            PrefixView {
+                prefix: p.prefix,
+                mode: modes.iter().find(|(k, _)| *k == p.index).map_or(SearchMode::Disabled, |(_, m)| *m),
+                dynamic: p.supports_dynamic_completion,
+                description: p.description_key.rsplit('.').next().unwrap_or("").to_owned(),
+                strings,
+            }
+        })
+        .collect();
+}
+
+/// The completion candidates for the search text (`SearchCompletion`), empty when the option is off.
+fn suggestions(s: &State) -> Vec<Candidate> {
+    if !s.focused || !s.config.bool("search", "searchCompletionEnabled") {
+        return Vec::new();
+    }
+    let rows = s.config.int("search", "maxSearchCompletionRows") as usize;
+    let cursor = s.query.encode_utf16().count();
+    completion::candidates(&s.query, cursor, &s.views, rows).candidates.into_iter().take(rows).collect()
+}
+
+/// Replaces the token under the cursor with a candidate (Tab); a leading `-` stays.
+fn accept(s: &mut State, c: &Candidate) {
+    let start = s.query.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    let token = &s.query[start..];
+    let keep = if token.starts_with('-') && c.insertion != "-" { start + 1 } else { start };
+    s.query.truncate(keep);
+    s.query.push_str(&c.insertion);
+    s.query.truncate(50);
+    refilter(s);
 }
 
 fn options_rows(s: &State, bw: i32, bh: i32) -> (Rect, Vec<Rect>) {
     let w = 200;
-    let n = MODE_ROWS.len() as i32 + 3;
+    let n = MODE_ROWS.len() as i32 + 4;
     let h = 14 + n * 20;
     let panel = Rect::new((bw - w) / 2, (bh - h) / 2, w, h);
     let _ = s;
@@ -152,6 +199,8 @@ fn draw_options(s: &State, draw: &mut dyn DrawContext) {
             format!("Max columns: {} (click +1, right -1)", s.columns)
         } else if i == n + 1 {
             format!("Max rows: {} (click +1, right -1)", s.rows)
+        } else if i == n + 3 {
+            format!("Search completion: {} (Tab accepts)", if s.config.bool("search", "searchCompletionEnabled") { "ON" } else { "OFF" })
         } else {
             format!("Hide Ingredients Mode: {} (Ctrl+click hides)", if s.edit { "ON" } else { "OFF" })
         };
@@ -186,6 +235,10 @@ fn options_click(host: &dyn ClientHost, s: &mut State, x: i32, y: i32, right: bo
         } else if i == n + 1 {
             s.rows = (s.rows + if right { -1 } else { 1 }).clamp(1, 100);
             host.set_setting("jei", "max_rows", &s.rows.to_string());
+        } else if i == n + 3 {
+            let on = !s.config.bool("search", "searchCompletionEnabled");
+            s.config.set("search", "searchCompletionEnabled", if on { "true" } else { "false" });
+            host.set_setting("jei", "config", &s.config.serialize());
         } else {
             s.edit = !s.edit;
             refilter(s);
@@ -273,6 +326,8 @@ fn refilter(s: &mut State) {
 fn open_recipes(s: &mut State, item: &str, role: Role) {
     let Some(r) = s.recipes.as_ref() else { return };
     let focus = Focus { role, uid: item.to_owned() };
+    s.lookups.add(item);
+    s.lookups_dirty = true;
     let cats: Vec<usize> = r
         .mgr
         .categories(std::slice::from_ref(&focus), false, &|_| true)
@@ -369,11 +424,25 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
         draw.text(&u.note, [(origin.0 + (lay.width - draw.text_width(&u.note) as i32) / 2) as f32, (origin.1 + lay.height + 4) as f32], 0xFF404040, false);
     }
     s.hot = hot;
+    // `LookupHistory`: the recipes looked up lately, under the view; a click opens that item's recipes.
+    s.lookup_rects.clear();
+    let per = ((pw - 4) / 18).max(1) as usize;
+    for (i, id) in s.lookups.items().iter().take(per).enumerate() {
+        let Some(&k) = s.index.get(id) else { continue };
+        let r = Rect::new(panel.x + 2 + i as i32 * 18, panel.y + ph + 4, 18, 18);
+        draw.fill(rect_f(r), SLOT_BG);
+        draw.item(s.keys[k], [(r.x + 1) as f32, (r.y + 1) as f32], 16.0);
+        s.lookup_rects.push((r, id.clone()));
+    }
 }
 
 /// A press inside the open view; true when it was the view's (always, inside the panel).
 fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
     let p = s.panel;
+    if let Some((_, id)) = s.lookup_rects.iter().find(|(r, _)| r.contains(x, y)).cloned() {
+        open_recipes(s, &id, Role::Output);
+        return true;
+    }
     if !p.contains(x, y) {
         s.view = None;
         s.history.clear();
@@ -435,6 +504,8 @@ impl Hooks for Mod {
                     .collect();
                 s.columns = host.setting("jei", "max_columns").and_then(|v| v.parse().ok()).unwrap_or(9).clamp(2, 100);
                 s.rows = host.setting("jei", "max_rows").and_then(|v| v.parse().ok()).unwrap_or(16).clamp(1, 100);
+                s.config = Config::parse(&host.setting("jei", "config").unwrap_or_default());
+                s.lookups = LookupHistory::load(&host.setting("jei", "lookups").unwrap_or_default(), s.config.int("lookups", "maxIngredients") as usize);
                 s.settings_loaded = true;
             }
             if !s.loaded {
@@ -529,7 +600,15 @@ impl Hooks for Mod {
                     unit = u;
                 }
             }
-            let _ = PREFIXES.len() + usize::from(SearchMode::Enabled == SearchMode::Enabled);
+            let cands = suggestions(s);
+            for (i, c) in cands.iter().enumerate() {
+                let r = Rect::new(search.x, search.y + search.h + i as i32 * 11, search.w.max(120), 11);
+                draw.fill(rect_f(r), 0xF0101010);
+                draw.text(&c.display, [(r.x + 3) as f32, (r.y + 2) as f32], if i == 0 { 0xFFFFFF55 } else { TEXT }, false);
+                if !c.description.is_empty() {
+                    draw.text(&c.description, [(r.x + 3 + draw.text_width(&c.display) as i32 + 8) as f32, (r.y + 2) as f32], 0xFF909090, false);
+                }
+            }
             s.started.get_or_insert_with(Instant::now);
             s.cheat_button = Rect::new(search.x + search.w + 4, search.y + 2, 44, 14);
             draw.fill(rect_f(s.cheat_button), if s.cheat { 0xFF55AA55 } else { 0xFF555555 });
@@ -644,6 +723,11 @@ impl Hooks for Mod {
 
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
         let (give, transfer) = STATE.with_borrow_mut(|s| (s.give.take(), s.pending_transfer.take()));
+        STATE.with_borrow_mut(|s| {
+            if std::mem::take(&mut s.lookups_dirty) {
+                host.set_setting("jei", "lookups", &s.lookups.save());
+            }
+        });
         if let Some((item, count)) = give {
             let _ = host.give(item, count);
         }
@@ -717,6 +801,11 @@ impl Hooks for Mod {
                 "key.keyboard.backspace" => {
                     s.query.pop();
                     refilter(s);
+                }
+                "key.keyboard.tab" => {
+                    if let Some(c) = suggestions(s).first().cloned() {
+                        accept(s, &c);
+                    }
                 }
                 "key.keyboard.enter" | "key.keyboard.keypad.enter" | "key.keyboard.escape" => s.focused = false,
                 _ => {}

@@ -9,7 +9,7 @@ and modes, paging by click or wheel), a search box that takes typing, cheat give
 
 Recipes: crafting (shaped by the recipe file's pattern), cooking, stonecutting and smithing from `recipes_of_type`, with a view (tabs, paging, R/U keys, click an ingredient, Backspace history) and a Cheat button.
 
-Also: bookmarks (A key, saved), options (search modes, grid size, hide mode: Ctrl+click hides), search syntax colours, smelting fuel and composting categories.
+Also: lookup history (strip of recent items under the recipe view, saved; `lookups.maxIngredients`), search completion (Options toggle, Tab accepts; `search.searchCompletionEnabled`, kept as `jei-client.toml` text in the mod's settings), bookmarks (A key, saved), options (search modes, grid size, hide mode: Ctrl+click hides), search syntax colours, smelting fuel and composting categories.
 
 Not yet: brewing, anvil, info, smoking and blasting fuel (needs fuel speed), variants (needs the creative stacks). Tooltips show name and mod only (the game's full tooltip needs the hovered stack with components). Gaps in upstream's API that the
 fork covered with its own helpers: creative stacks with components and tabs, the hovered stack with components, a ghost
