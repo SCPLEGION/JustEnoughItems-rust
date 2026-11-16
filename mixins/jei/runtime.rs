@@ -172,6 +172,55 @@ fn register_anvil(data: &NativeRecipes, anvil: &[super::native_hooks::NativeAnvi
     }
 }
 
+/// `SmeltingFuelCategory`, `SmokingFuelCategory`, `BlastingFuelCategory` and `CompostableRecipeCategory`: the fuels
+/// grouped by burn time and speed (as `FuelRecipeMaker` does), and the compostables by chance.
+fn register_fuel_and_compost(game: &mut Game<'_>) {
+    let fuel_layout = |game: &Game<'_>| {
+        let w = game.native_text_width("Smelts 10000000 items") as i32;
+        Layout { width: 18 + 20 + w, height: 34, slots: vec![slot_input(0, 1, 17)], arrow: None }
+    };
+    for (id, title, icon, fast) in [
+        ("jei:smelting_fuel", "Smelting Fuel", "minecraft:furnace", false),
+        ("jei:smoking_fuel", "Smoking Fuel", "minecraft:smoker", true),
+        ("jei:blasting_fuel", "Blasting Fuel", "minecraft:blast_furnace", true),
+    ] {
+        let _ = register_category(CategoryDef::custom(id, title, icon, fuel_layout(game)));
+        let _ = add_catalyst(id, icon);
+        let mut groups: Vec<((i32, u32), Vec<String>)> = Vec::new();
+        for f in game.native_fuels(fast) {
+            let key = (f.ticks, f.speed.to_bits());
+            match groups.iter_mut().find(|g| g.0 == key) {
+                Some(g) => g.1.push(f.item),
+                None => groups.push((key, vec![f.item])),
+            }
+        }
+        groups.sort_by_key(|g| g.0.0);
+        for ((ticks, speed), items) in groups {
+            let speed = f32::from_bits(speed);
+            let cooking = if speed > 0.0 { i32::max(1, (200.0 / speed).ceil() as i32) } else { 200 };
+            let count = ticks as f32 / cooking as f32;
+            let note = if count == 1.0 { "Smelts 1 item".to_owned() } else { format!("Smelts {} items", trim_float(count)) };
+            let _ = add_recipe(CustomRecipe { recipe_type: id.to_owned(), inputs: vec![items], outputs: vec![], notes: vec![note] });
+        }
+    }
+    let _ = register_category(CategoryDef::custom(COMPOST, "Composting", "minecraft:composter", Layout { width: 120, height: 18, slots: vec![slot_input(0, 1, 1)], arrow: None }));
+    let _ = add_catalyst(COMPOST, "minecraft:composter");
+    let mut all = game.native_compostables();
+    all.sort_by(|a, b| a.chance.total_cmp(&b.chance));
+    for c in all {
+        let percent = (c.chance * 100.0).floor() as i32;
+        let _ = add_recipe(CustomRecipe { recipe_type: COMPOST.to_owned(), inputs: vec![vec![c.item]], outputs: vec![], notes: vec![format!("Chance: {percent}%")] });
+    }
+}
+
+const COMPOST: &str = "jei:compostable";
+
+/// `NumberFormat` with at most two fraction digits.
+fn trim_float(v: f32) -> String {
+    let s = format!("{:.2}", v);
+    s.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
 /// `IRecipeCategoryRegistration`: another mod's recipe category (call from its own glue, at start).
 #[allow(dead_code)]
 pub fn register_category(def: CategoryDef) -> Result<(), PluginError> {
@@ -371,6 +420,7 @@ pub(super) fn tick(game: &mut Game<'_>) {
         if let (Some(data), Some(anvil)) = (game.native_recipes(), game.native_anvil_recipes()) {
             register_anvil(&data, &anvil);
             STATE.with_borrow_mut(|s| s.anvil_done = true);
+            register_fuel_and_compost(game);
         }
     }
     let version = PLUGINS.with_borrow(|p| p.version);
