@@ -23,6 +23,7 @@ pub enum Action {
     PreviousCategory,
     NextCategory,
     CloseRecipeGui,
+    PauseRecipeCycling,
 }
 
 /// GLFW modifier bits: shift 1, control 2, alt 4.
@@ -67,6 +68,7 @@ pub const MAPPINGS: &[Mapping] = &[
     m("key.jei.nextRecipePage", Action::NextRecipePage, "key.keyboard.page.down", 0, true),
     m("key.jei.previousCategory", Action::PreviousCategory, "key.keyboard.page.up", SHIFT, true),
     m("key.jei.nextCategory", Action::NextCategory, "key.keyboard.page.down", SHIFT, true),
+    m("key.jei.pauseRecipeCycling", Action::PauseRecipeCycling, "key.keyboard.left.shift", 0, true),
     m("key.jei.closeRecipeGui", Action::CloseRecipeGui, "key.keyboard.escape", 0, true),
 ];
 

@@ -52,6 +52,11 @@ struct State {
     hot: Vec<(Rect, String)>,
     panel: Rect,
     started: Option<Instant>,
+    /// The recipe slots' cycling clock in ms: it stops while `pauseRecipeCycling` is held.
+    cycle_clock: u128,
+    last_frame: Option<Instant>,
+    /// The recipe views `recipeBack` left, for `recipeForward`.
+    forward: Vec<View>,
     /// Cheat mode: a click on a listed item gives it (`jei.cheatMode`).
     cheat: bool,
     settings_loaded: bool,
@@ -359,6 +364,7 @@ fn refilter(s: &mut State) {
 fn open_recipes(s: &mut State, item: &str, role: Role) {
     let Some(r) = s.recipes.as_ref() else { return };
     let focus = Focus { role, uid: item.to_owned() };
+    s.forward.clear();
     s.lookups.add(item);
     s.lookups_dirty = true;
     s.tab_page = None;
@@ -415,7 +421,7 @@ fn cycle(s: &State, list: &[String]) -> Option<String> {
     if !s.config.bool("input", "recipeSlotCyclingEnabled") {
         return Some(list[0].clone());
     }
-    let ms = s.started.map_or(0, |t| t.elapsed().as_millis());
+    let ms = s.cycle_clock;
     Some(list[(ms / CYCLE_MS) as usize % list.len()].clone())
 }
 
@@ -878,6 +884,11 @@ impl Hooks for Mod {
                 }
             }
             s.started.get_or_insert_with(Instant::now);
+            let now = Instant::now();
+            let dt = s.last_frame.replace(now).map_or(0, |t| now.duration_since(t).as_millis().min(250));
+            if !host.is_down("jei", "pauseRecipeCycling") {
+                s.cycle_clock += dt;
+            }
             // The config button (`config_button.png`; the cheat icon, red, while cheating).
             let cfg = s.options_button;
             ui::button(draw, cfg, cfg.contains(cx, cy));
@@ -1094,7 +1105,18 @@ impl Hooks for Mod {
                     }
                     Some(Action::RecipeBack) if s.view.is_some() => {
                         // `HistoryList`: goes back to the earlier recipe view, then closes.
+                        let current = s.view.take();
                         s.view = s.history.pop();
+                        if s.view.is_some() {
+                            s.forward.extend(current);
+                        }
+                        return Flow::Cancel;
+                    }
+                    Some(Action::RecipeForward) if s.view.is_some() => {
+                        if let Some(next) = s.forward.pop() {
+                            s.history.extend(s.view.take());
+                            s.view = Some(next);
+                        }
                         return Flow::Cancel;
                     }
                     Some(Action::CloseRecipeGui) if s.view.is_some() => {
