@@ -69,6 +69,8 @@ struct State {
     /// The "+" of the recipe shown: its rect and the recipe id.
     hits: Vec<(Rect, Hit)>,
     per_page: i32,
+    /// Recipe columns of the recipe screen, the step of the scrolled mode.
+    recipe_columns: i32,
     tab_page: Option<usize>,
     /// A transfer the click asked for (recipe, all sets), done in the next client tick.
     pending_transfer: Option<(String, bool)>,
@@ -258,6 +260,8 @@ struct View {
     cats: Vec<usize>,
     cat: usize,
     page: usize,
+    /// The first recipe shown in the scrolled navigation mode.
+    first: usize,
     recipes: Vec<RecipeId>,
     focus: Focus,
 }
@@ -290,6 +294,19 @@ fn load(host: &dyn ClientHost, s: &mut State) {
     let Some(entries) = host.registry_entries("minecraft:item") else { return };
     let cfg = FilterConfig::default();
     let mut names: HashMap<ItemKey, String> = HashMap::new();
+    // The creative inventory's own tooltip lines and tab titles, for search (`$tooltip`, `%tab`) and the hover.
+    let mut extra: HashMap<ItemKey, (Vec<String>, Vec<String>)> = HashMap::new();
+    for c in host.creative_inventory_stacks() {
+        let e = extra.entry(c.stack.item()).or_default();
+        if e.0.is_empty() {
+            e.0 = c.tooltip.clone();
+        }
+        for tab in c.tabs {
+            if !e.1.contains(&tab) {
+                e.1.push(tab);
+            }
+        }
+    }
     for id in entries {
         let Some(key) = host.item_key(&id) else { continue };
         let id = id.to_string();
@@ -303,6 +320,8 @@ fn load(host: &dyn ClientHost, s: &mut State) {
             mod_name: mod_name(ns),
             display_mod_name: mod_name(ns),
             mod_aliases: vec![vec![]],
+            tooltip: extra.get(&key).map(|e| e.0.clone()).unwrap_or_default(),
+            creative_tabs: extra.get(&key).map(|e| e.1.clone()).unwrap_or_default(),
             ..Default::default()
         };
         let i = s.infos.len();
@@ -350,13 +369,14 @@ fn open_recipes(s: &mut State, item: &str, role: Role) {
     if let Some(old) = s.view.take() {
         s.history.push(old);
     }
-    s.view = Some(View { cats, cat: 0, page: 0, recipes, focus });
+    s.view = Some(View { cats, cat: 0, page: 0, first: 0, recipes, focus });
 }
 
 fn select_category(s: &mut State, cat: usize) {
     let (Some(r), Some(v)) = (s.recipes.as_ref(), s.view.as_mut()) else { return };
     v.cat = cat;
     v.page = 0;
+    v.first = 0;
     s.tab_page = None;
     v.recipes = r.mgr.recipes(&r.cats[v.cats[cat]].recipe_type, std::slice::from_ref(&v.focus), false, &|_| true);
 }
@@ -395,6 +415,12 @@ fn note_x(recipe_type: &str) -> i32 {
     }
 }
 
+/// Scrolls the recipe list by `dir` rows of `step` recipes, stopping at both ends.
+fn scroll_recipes(v: &mut View, dir: i32, step: i32, per: i32) {
+    let max = (v.recipes.len() as i32 - per).max(0);
+    v.first = (v.first as i32 + dir * step).clamp(0, max) as usize;
+}
+
 /// `RecipesGui`: the panel over the screen (`gui_background`), the category tabs above it, the category and page
 /// arrows with the title, and the recipes of the page in `RecipeGuiGrid` cells, each with its side buttons.
 fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>) {
@@ -425,8 +451,12 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     let grid = recipe_gui::RecipeGrid::calculate((avail.w, avail.h), (total_w, cell_size.1), max_columns);
     let per = grid.recipes_per_page();
     s.per_page = per;
+    s.recipe_columns = grid.columns;
+    let scrolled = s.config.text("recipes", "navigationMode") == "SCROLLED";
     let pages = grid::page_count(v.recipes.len() as i32, per).max(1);
     let page = (v.page as i32).min(pages - 1);
+    // `RecipeNavigationMode.SCROLLED`: the list moves a row at a time instead of a page.
+    let first_recipe = if scrolled { (v.first as i32).min((v.recipes.len() as i32 - per).max(0)) } else { page * per };
     s.panel = area;
     s.hits.clear();
 
@@ -495,7 +525,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     draw.text(&title, [(nav.title.x + (nav.title.w - tw) / 2) as f32, (nav.title.y + (nav.title.h - 9) / 2) as f32], TEXT, true);
     let mut arrows = vec![(nav.previous_category, true, Hit::PreviousCategory), (nav.next_category, false, Hit::NextCategory)];
     draw.fill(rect_f(between(nav.previous_page, nav.next_page)), PAGE_NAV_BG);
-    let label = recipe_gui::page_string(page * per, per, v.recipes.len() as i32);
+    let label = recipe_gui::page_string(first_recipe, per, v.recipes.len() as i32);
     let lw = draw.text_width(&label) as i32;
     draw.text(&label, [(nav.page_area.x + (nav.page_area.w - lw) / 2) as f32, (nav.page_area.y + (nav.page_area.h - 9) / 2) as f32], TEXT, true);
     arrows.push((nav.previous_page, true, Hit::PreviousPage));
@@ -509,7 +539,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     // The recipes of the page.
     let mut hot = Vec::new();
     for slot_index in 0..per {
-        let idx = (page * per + slot_index) as usize;
+        let idx = (first_recipe + slot_index) as usize;
         let Some(u) = ui_at(idx) else { break };
         let lay = layout_of(Some(&u));
         let cell = grid.recipe_area(slot_index, avail, cell_size, total_w);
@@ -594,8 +624,13 @@ fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
                 select_category(s, next);
             }
             Hit::PreviousPage | Hit::NextPage => {
+                let (scrolled, step) = (s.config.text("recipes", "navigationMode") == "SCROLLED", s.recipe_columns.max(1));
                 if let Some(v) = s.view.as_mut() {
-                    v.page = if matches!(hit, Hit::NextPage) { (v.page + 1) % pages } else { (v.page + pages - 1) % pages };
+                    if scrolled {
+                        scroll_recipes(v, if matches!(hit, Hit::NextPage) { 1 } else { -1 }, step, s.per_page);
+                    } else {
+                        v.page = if matches!(hit, Hit::NextPage) { (v.page + 1) % pages } else { (v.page + pages - 1) % pages };
+                    }
                 }
             }
             Hit::TabsPrevious | Hit::TabsNext => {
@@ -789,7 +824,10 @@ impl Hooks for Mod {
             {
                 let name = ItemStack::new(s.keys[k], 1).map_or_else(|| id.clone(), |st| host.hover_name(&st));
                 let ns = id.split_once(':').map_or("minecraft", |p| p.0);
-                let _ = draw.gui_tooltip(&[Text::literal(name), Text::literal(mod_name(ns))], [cx as f32, cy as f32]);
+                let mut lines = vec![Text::literal(name)];
+                lines.extend(s.infos[k].data.tooltip.iter().map(|l| Text::literal(l.clone())));
+                lines.push(Text::literal(mod_name(ns)));
+                let _ = draw.gui_tooltip(&lines, [cx as f32, cy as f32]);
             }
         });
     }
@@ -911,8 +949,14 @@ impl Hooks for Mod {
                 // `RecipeNavigationInputHandler`: the wheel over the recipe screen turns its pages.
                 if s.panel.contains(x, y) {
                     let pages = grid::page_count(s.view.as_ref().map_or(0, |v| v.recipes.len()) as i32, s.per_page.max(1)).max(1) as usize;
+                    let (scrolled, step) = (s.config.text("recipes", "navigationMode") == "SCROLLED", s.recipe_columns.max(1));
+                    let per = s.per_page;
                     if let Some(v) = s.view.as_mut() {
-                        v.page = if event.scroll[1] > 0.0 { (v.page + pages - 1) % pages } else { (v.page + 1) % pages };
+                        if scrolled {
+                            scroll_recipes(v, if event.scroll[1] > 0.0 { -1 } else { 1 }, step, per);
+                        } else {
+                            v.page = if event.scroll[1] > 0.0 { (v.page + pages - 1) % pages } else { (v.page + 1) % pages };
+                        }
                     }
                     return Flow::Cancel;
                 }
@@ -961,7 +1005,7 @@ impl Hooks for Mod {
                         // `jei.key.showRecipe` (R) and `jei.key.showUses` (U) on the stack under the cursor.
                         let (x, y) = (event.screen.mouse[0] as i32, event.screen.mouse[1] as i32);
                         let over = s.hot.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| id.clone()).or_else(|| {
-                            host.screen_hovered_item().and_then(|k| s.keys.iter().position(|x| *x == k)).map(|i| s.ids[i].clone())
+                            host.screen_hovered_stack().map(|st| st.item()).and_then(|k| s.keys.iter().position(|x| *x == k)).map(|i| s.ids[i].clone())
                         });
                         if let Some(id) = over {
                             open_recipes(s, &id, if event.key == "key.keyboard.r" { Role::Output } else { Role::Input });
