@@ -26,6 +26,43 @@ const COMPOST: &str = "jei:compostable";
 const ANVIL: &str = "jei:anvil";
 const GRINDSTONE: &str = "jei:grindstone";
 
+/// The selected language's text for `key`, or `fallback` when no language layer has it.
+fn tr(host: &dyn ClientHost, key: &str, fallback: &str) -> String {
+    host.translate(key).unwrap_or_else(|| fallback.to_owned())
+}
+
+/// `String.format` for lang templates: `%s`, `%d`, `%1$s` and `%%`, with `args` taken in order or by position.
+pub fn fmt(template: &str, args: &[String]) -> String {
+    let mut out = String::new();
+    let mut next = 0;
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let mut spec = String::new();
+        while let Some(&n) = chars.peek() {
+            chars.next();
+            if n == 's' || n == 'd' || n == '%' {
+                spec.push(n);
+                break;
+            }
+            spec.push(n);
+        }
+        if spec == "%" {
+            out.push('%');
+            continue;
+        }
+        let index = spec.strip_suffix('$').and_then(|d| d.parse::<usize>().ok());
+        // `%1$s` leaves `1$s` in `spec` up to the conversion letter; take the digits before `$`.
+        let index = index.or_else(|| spec.split('$').next().filter(|_| spec.contains('$')).and_then(|d| d.parse::<usize>().ok()));
+        let i = index.map_or_else(|| { next += 1; next - 1 }, |n| n - 1);
+        out.push_str(args.get(i).map_or("", String::as_str));
+    }
+    out
+}
+
 /// `NumberFormat` with at most two fraction digits.
 fn trim_float(v: f32) -> String {
     let s = format!("{v:.2}");
@@ -86,6 +123,12 @@ fn shaped(host: &dyn ClientHost, r: &Recipe) -> Option<((i32, i32), Vec<Vec<Stri
 pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes {
     let mut mgr = RecipeManager::new();
     let cats: Vec<CategoryDef> = Kind::ALL.iter().map(|k| CategoryDef::vanilla(*k)).collect();
+    let mut cats = cats;
+    for c in &mut cats {
+        if let Some(k) = c.vanilla {
+            c.title = tr(host, k.title_key(), &c.title);
+        }
+    }
     for c in &cats {
         mgr.add_category(&c.recipe_type);
         mgr.add_crafting_station(&c.recipe_type, c.stations.clone());
@@ -159,7 +202,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     register(
         &mut mgr,
         &mut cats,
-        CategoryDef::custom(FUEL, "Smelting Fuel", "minecraft:furnace", Layout { width: 18 + 20 + text_w, height: 34, slots: vec![view::input(0, 1, 17)], arrow: None }),
+        CategoryDef::custom(FUEL, &tr(host, "gui.jei.category.smelting_fuel", "Smelting Fuel"), "minecraft:furnace", Layout { width: 18 + 20 + text_w, height: 34, slots: vec![view::input(0, 1, 17)], arrow: None }),
     );
     let mut fuels: Vec<(i32, Vec<String>)> = Vec::new();
     for (key, id) in names {
@@ -174,25 +217,29 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     for (ticks, mut items) in fuels {
         items.sort();
         let count = ticks as f32 / 200.0;
-        let note = if count == 1.0 { "Smelts 1 item".to_owned() } else { format!("Smelts {} items", trim_float(count)) };
+        let note = if count == 1.0 {
+            tr(host, "gui.jei.category.fuel.smeltCount.single", "Smelts 1 item")
+        } else {
+            fmt(&tr(host, "gui.jei.category.fuel.smeltCount", "Smelts %s items"), &[trim_float(count)])
+        };
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: FUEL.into(), note, grid: (1, 1), inputs: vec![items], outputs: vec![] });
     }
     register(
         &mut mgr,
         &mut cats,
-        CategoryDef::custom(COMPOST, "Composting", "minecraft:composter", Layout { width: 120, height: 18, slots: vec![view::input(0, 1, 1)], arrow: None }),
+        CategoryDef::custom(COMPOST, &tr(host, "gui.jei.category.compostable", "Composting"), "minecraft:composter", Layout { width: 120, height: 18, slots: vec![view::input(0, 1, 1)], arrow: None }),
     );
     let mut compost: Vec<(f32, String)> = names.iter().filter_map(|(k, id)| host.item_compost_chance(*k).filter(|c| *c > 0.0).map(|c| (c, id.clone()))).collect();
     compost.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     for (chance, id) in compost {
-        let note = format!("Chance: {}%", (chance * 100.0).floor() as i32);
+        let note = fmt(&tr(host, "gui.jei.category.compostable.chance", "Chance: %s%%"), &[((chance * 100.0).floor() as i32).to_string()]);
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
     }
     // The anvil (`AnvilRecipeMaker`): each repairable item with its materials, each enchantable one with books.
     register(
         &mut mgr,
         &mut cats,
-        CategoryDef::custom(ANVIL, "Anvil", "minecraft:anvil", Layout { width: 125, height: 18, slots: vec![view::input(0, 0, 0), view::input(1, 49, 0), view::output(107, 0)], arrow: None }),
+        CategoryDef::custom(ANVIL, &tr(host, "container.repair", "Anvil"), "minecraft:anvil", Layout { width: 125, height: 18, slots: vec![view::input(0, 0, 0), view::input(1, 49, 0), view::output(107, 0)], arrow: None }),
     );
     for a in host.anvil_recipes() {
         let id_list = |v: &[ItemStack]| -> Vec<String> { v.iter().filter_map(|s| id_of(names, s)).collect() };
@@ -200,7 +247,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         if left.is_empty() || right.is_empty() || out.is_empty() {
             continue;
         }
-        let note = a.costs.iter().min().map(|c| format!("Cost: {c}")).unwrap_or_default();
+        let note = a.costs.iter().min().map(|c| fmt(&tr(host, "container.repair.cost", "Enchantment Cost: %1$d"), &[c.to_string()])).unwrap_or_default();
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: ANVIL.into(), note, grid: (1, 1), inputs: vec![left, right], outputs: out });
     }
     // Brewing (`BrewingRecipeMaker`): one recipe per ingredient item with the bottles it turns and what they become.
@@ -232,7 +279,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     register(
         &mut mgr,
         &mut cats,
-        CategoryDef::custom(GRINDSTONE, "Grindstone", "minecraft:grindstone", Layout { width: 116, height: 61, slots: vec![view::input(0, 18, 3), view::input(1, 18, 24), view::output(98, 19)], arrow: None }),
+        CategoryDef::custom(GRINDSTONE, &tr(host, "gui.jei.category.grindstone", "Grinding"), "minecraft:grindstone", Layout { width: 116, height: 61, slots: vec![view::input(0, 18, 3), view::input(1, 18, 24), view::output(98, 19)], arrow: None }),
     );
     for g in host.grindstone_recipes() {
         let list = |v: &[ItemStack]| -> Vec<String> { v.iter().filter_map(|s| id_of(names, s)).collect() };
@@ -240,7 +287,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         if top.is_empty() && bottom.is_empty() || out.is_empty() {
             continue;
         }
-        let note = if g.xp_max > 0 { format!("XP: {}-{}", g.xp_min, g.xp_max) } else { String::new() };
+        let note = if g.xp_max > 0 { fmt(&tr(host, "gui.jei.category.grindstone.experience", "%s to %s XP"), &[g.xp_min.to_string(), g.xp_max.to_string()]) } else { String::new() };
         add(&mut mgr, UiRecipe { id: String::new(), recipe_type: GRINDSTONE.into(), note, grid: (1, 1), inputs: vec![top, bottom], outputs: out });
     }
     // Categories and recipes other mods registered through `api` (`IModPlugin`).
@@ -262,6 +309,14 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_lang_templates() {
+        assert_eq!(fmt("Chance: %s%%", &["30".into()]), "Chance: 30%");
+        assert_eq!(fmt("%s to %s XP", &["1".into(), "4".into()]), "1 to 4 XP");
+        assert_eq!(fmt("Cost: %1$d", &["5".into()]), "Cost: 5");
+        assert_eq!(fmt("%2$s then %1$s", &["a".into(), "b".into()]), "b then a");
+    }
 
     #[test]
     fn trims_floats() {

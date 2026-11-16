@@ -314,7 +314,9 @@ fn load(host: &dyn ClientHost, s: &mut State) {
     let mut names: HashMap<ItemKey, String> = HashMap::new();
     // The creative inventory's own tooltip lines and tab titles, for search (`$tooltip`, `%tab`) and the hover.
     let mut extra: HashMap<ItemKey, (Vec<String>, Vec<String>)> = HashMap::new();
-    for c in host.creative_inventory_stacks() {
+    let mut creative_order: HashMap<ItemKey, usize> = HashMap::new();
+    for (n, c) in host.creative_inventory_stacks().into_iter().enumerate() {
+        creative_order.entry(c.stack.item()).or_insert(n);
         let e = extra.entry(c.stack.item()).or_default();
         if e.0.is_empty() {
             e.0 = c.tooltip.clone();
@@ -325,9 +327,19 @@ fn load(host: &dyn ClientHost, s: &mut State) {
             }
         }
     }
-    for id in entries {
-        let Some(key) = host.item_key(&id) else { continue };
-        let id = id.to_string();
+    // `IngredientSortStage.defaultStages`: mod name, then the creative menu's order (items outside it last, in registry order).
+    let mut entries: Vec<(String, usize, usize, ItemKey, String)> = entries
+        .into_iter()
+        .enumerate()
+        .filter_map(|(n, id)| {
+            let key = host.item_key(&id)?;
+            let id = id.to_string();
+            let ns = id.split_once(':').map_or("minecraft", |p| p.0);
+            Some((mod_name(ns).to_lowercase(), creative_order.get(&key).copied().unwrap_or(usize::MAX), n, key, id))
+        })
+        .collect();
+    entries.sort_by(|a, b| (&a.0, a.1, a.2).cmp(&(&b.0, b.1, b.2)));
+    for (_, _, _, key, id) in entries {
         let name = ItemStack::new(key, 1).map(|st| host.hover_name(&st)).unwrap_or_else(|| id.clone());
         let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
         let data = IngredientData {
