@@ -38,8 +38,8 @@ Not tested in game yet (no Minecraft resources in the build container).
 
 ## Audit against the Java source: gaps still open
 
-1. **Hide ingredients / edit mode** (`IngredientBlacklistInternal`, `jei-blacklist`) and the **config file** (`jei-client.toml`
-   with the full option set). The options screen covers search modes and grid size only.
+1. **Config file** (`jei-client.toml` with the full option set). Hide ingredients mode is done (options screen toggle, Ctrl+click
+   hides, Ctrl+right-click hides all variants, saved in the mod's settings); the rest of the options are not.
 2. **Search completion overlay**, **syntax highlighting** and **history list** (the bottom history of recently opened
    ingredients; recipe-view history is done).
 3. **Recipe view fidelity**: JEI's background sprites, animated arrow/flame/bubbles, slot backgrounds, focus highlight of the
