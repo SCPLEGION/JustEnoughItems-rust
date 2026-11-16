@@ -40,9 +40,8 @@ Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredie
 
 Keybinds: the keyboard mappings of `InternalKeyMappings` are registered on Options > Controls (`jei-core::keys`) and
 dispatched from the bound keys: `toggleOverlay`, `focusSearch`, `previousPage`/`nextPage`, `bookmark`, `showRecipe`,
-`showUses`, `toggleCheatMode`, `recipeBack`, `previousRecipePage`/`nextRecipePage`, `previousCategory`/`nextCategory`,
-`closeRecipeGui`. Still unbound: `previousSearch`/`nextSearch` (the search history is not recorded in the glue),
-`toggleBookmarkOverlay`, `toggleEditMode`, `recipeForward`, the mouse mappings as keys (cheat give variants,
+`showUses`, `toggleCheatMode`, `toggleEditMode`, `previousSearch`/`nextSearch` (search history), `recipeBack`, `previousRecipePage`/`nextRecipePage`, `previousCategory`/`nextCategory`,
+`closeRecipeGui`. Still unbound: `toggleBookmarkOverlay`, `recipeForward`, the mouse mappings as keys (cheat give variants,
 `quickMove`, `transferRecipeBookmark`, `maxTransferRecipeBookmark`, `toggleHideIngredient*`, `clearSearchBar`),
 `pauseRecipeCycling`, `copy.recipe.id`, `shareToChat`.
 
