@@ -91,7 +91,7 @@ pub enum SlotRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotPos {
     pub role: SlotRole,
-    /// Index into the recipe's input slots (for `Input`), `usize::MAX` otherwise.
+    /// Index into the recipe's input slots (`Input`) or output slots (`Output`), `usize::MAX` for the fuel.
     pub input: usize,
     pub x: i32,
     pub y: i32,
@@ -106,11 +106,11 @@ pub struct Layout {
     pub arrow: Option<(i32, i32)>,
 }
 
-fn input(i: usize, x: i32, y: i32) -> SlotPos {
+pub fn input(i: usize, x: i32, y: i32) -> SlotPos {
     SlotPos { role: SlotRole::Input, input: i, x, y }
 }
-fn output(x: i32, y: i32) -> SlotPos {
-    SlotPos { role: SlotRole::Output, input: usize::MAX, x, y }
+pub fn output(x: i32, y: i32) -> SlotPos {
+    SlotPos { role: SlotRole::Output, input: 0, x, y }
 }
 fn fuel(x: i32, y: i32) -> SlotPos {
     SlotPos { role: SlotRole::Fuel, input: usize::MAX, x, y }

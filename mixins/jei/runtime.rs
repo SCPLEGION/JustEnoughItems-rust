@@ -5,12 +5,14 @@
 use super::native_hooks::{NativeRecipeKind, NativeRecipes};
 use super::Game;
 use horizon_client::hud::HudBatch;
+use jei_core::bookmarks::BookmarkList;
 use jei_core::grid::{self, GridConfig, Rect};
+use jei_core::plugin::{CategoryDef, CustomRecipe, PluginError, Registry};
 use jei_core::ingredient::{FilterConfig, IngredientData, ListElementInfo};
 use jei_core::prefix::{default_mode, SearchIndex};
 use jei_core::recipes::{Focus, RecipeId, RecipeManager, Role, Slot};
 use jei_core::search::ElementSearch;
-use jei_core::view::{self, Kind, SlotRole};
+use jei_core::view::{Kind, SlotRole};
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,8 +27,16 @@ const HOVER: u32 = 0x80FFFFFF;
 /// How long a slot shows one of its ingredients before the next (JEI cycles each second).
 const CYCLE_MS: u128 = 1000;
 
+/// Where a recipe of the manager comes from.
+#[derive(Clone, Copy)]
+enum Src {
+    Native(usize),
+    Custom(usize),
+}
+
 struct View {
-    cats: Vec<Kind>,
+    /// Indexes into `State::cats`.
+    cats: Vec<usize>,
     cat: usize,
     page: usize,
     recipes: Vec<RecipeId>,
@@ -40,6 +50,8 @@ struct Places {
     search: Rect,
     /// The recipe view's box and the slots drawn in it: (rect, item index, role of a click on it).
     panel: Rect,
+    /// The bookmark list's grid.
+    marks: Rect,
 }
 
 struct State {
@@ -48,8 +60,12 @@ struct State {
     search: ElementSearch,
     mgr: RecipeManager,
     /// Recipe id -> index into `data.recipes`.
-    recipe_of: Vec<usize>,
-    kind_of_type: Vec<(String, Kind)>,
+    recipe_of: Vec<Src>,
+    cats: Vec<CategoryDef>,
+    bookmarks: BookmarkList,
+    plugin_version: u64,
+    /// The transfer button of the recipe shown: its rect and the recipe book id.
+    transfer: Option<(Rect, i32)>,
     query: String,
     focused: bool,
     results: Vec<usize>,
@@ -70,7 +86,10 @@ impl State {
             search: ElementSearch::new(default_mode),
             mgr: RecipeManager::new(),
             recipe_of: Vec::new(),
-            kind_of_type: Kind::ALL.iter().map(|k| (k.recipe_type().to_owned(), *k)).collect(),
+            cats: Vec::new(),
+            bookmarks: BookmarkList::new(),
+            plugin_version: 0,
+            transfer: None,
             query: String::new(),
             focused: false,
             results: Vec::new(),
@@ -86,6 +105,23 @@ impl State {
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::new());
+    static PLUGINS: RefCell<Registry> = RefCell::new(Registry::default());
+}
+
+/// `IRecipeCategoryRegistration`: another mod's recipe category (call from its own glue, at start).
+#[allow(dead_code)]
+pub fn register_category(def: CategoryDef) -> Result<(), PluginError> {
+    PLUGINS.with_borrow_mut(|p| p.register_category(def))
+}
+/// `IRecipeCatalystRegistration`.
+#[allow(dead_code)]
+pub fn add_catalyst(recipe_type: &str, item: &str) -> Result<(), PluginError> {
+    PLUGINS.with_borrow_mut(|p| p.add_catalyst(recipe_type, item))
+}
+/// `IRecipeRegistration.addRecipes`.
+#[allow(dead_code)]
+pub fn add_recipe(recipe: CustomRecipe) -> Result<(), PluginError> {
+    PLUGINS.with_borrow_mut(|p| p.add_recipe(recipe))
 }
 
 fn mod_name(namespace: &str) -> String {
@@ -114,9 +150,11 @@ fn kind_of(k: NativeRecipeKind) -> Kind {
 
 /// Builds JEI's indexes from the game's items and recipes, once per set of them.
 fn load(state: &mut State, data: Arc<NativeRecipes>) {
-    if state.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &data)) {
+    let plugins = PLUGINS.with_borrow(Clone::clone);
+    if plugins.version == state.plugin_version && state.data.as_ref().is_some_and(|d| Arc::ptr_eq(d, &data)) {
         return;
     }
+    state.plugin_version = plugins.version;
     let cfg = state.cfg;
     state.infos.clear();
     state.search = ElementSearch::new(default_mode);
@@ -138,9 +176,11 @@ fn load(state: &mut State, data: Arc<NativeRecipes>) {
         state.infos.push(info);
     }
     let mut mgr = RecipeManager::new();
-    for k in Kind::ALL {
-        mgr.add_category(k.recipe_type());
-        mgr.add_crafting_station(k.recipe_type(), vec![k.icon().to_owned()]);
+    let mut cats: Vec<CategoryDef> = Kind::ALL.iter().map(|k| CategoryDef::vanilla(*k)).collect();
+    cats.extend(plugins.categories.iter().cloned());
+    for c in &cats {
+        mgr.add_category(&c.recipe_type);
+        mgr.add_crafting_station(&c.recipe_type, c.stations.clone());
     }
     let mut recipe_of = Vec::new();
     for (n, r) in data.recipes.iter().enumerate() {
@@ -156,11 +196,22 @@ fn load(state: &mut State, data: Arc<NativeRecipes>) {
         });
         if let Some(id) = mgr.add_recipe(kind.recipe_type(), slots) {
             if recipe_of.len() <= id as usize {
-                recipe_of.resize(id as usize + 1, 0);
+                recipe_of.resize(id as usize + 1, Src::Native(0));
             }
-            recipe_of[id as usize] = n;
+            recipe_of[id as usize] = Src::Native(n);
         }
     }
+    for (n, r) in plugins.recipes.iter().enumerate() {
+        let mut slots: Vec<Slot> = r.inputs.iter().map(|i| Slot { role: Role::Input, ingredients: i.clone() }).collect();
+        slots.extend(r.outputs.iter().map(|o| Slot { role: Role::Output, ingredients: o.clone() }));
+        if let Some(id) = mgr.add_recipe(&r.recipe_type, slots) {
+            if recipe_of.len() <= id as usize {
+                recipe_of.resize(id as usize + 1, Src::Native(0));
+            }
+            recipe_of[id as usize] = Src::Custom(n);
+        }
+    }
+    state.cats = cats;
     state.mgr = mgr;
     state.recipe_of = recipe_of;
     state.data = Some(data);
@@ -174,7 +225,8 @@ fn refilter(state: &mut State) {
 
 /// Every tick: the data, once there is a world.
 pub(super) fn tick(game: &mut Game<'_>) {
-    let needs = STATE.with_borrow(|s| s.data.is_none());
+    let version = PLUGINS.with_borrow(|p| p.version);
+    let needs = STATE.with_borrow(|s| s.data.is_none() || s.plugin_version != version);
     if needs && let Some(d) = game.native_recipes() {
         STATE.with_borrow_mut(|s| load(s, d));
     }
@@ -186,16 +238,16 @@ fn rect_f(r: Rect) -> [f32; 4] {
 
 fn open_recipes(state: &mut State, item: &str, role: Role) {
     let focus = Focus { role, uid: item.to_owned() };
-    let cats: Vec<Kind> = state
+    let cats: Vec<usize> = state
         .mgr
         .categories(std::slice::from_ref(&focus), false, &|_| true)
         .iter()
-        .filter_map(|t| state.kind_of_type.iter().find(|(n, _)| n == t).map(|(_, k)| *k))
+        .filter_map(|t| state.cats.iter().position(|c| &c.recipe_type == t))
         .collect();
     if cats.is_empty() {
         return;
     }
-    let recipes = state.mgr.recipes(cats[0].recipe_type(), std::slice::from_ref(&focus), false, &|_| true);
+    let recipes = state.mgr.recipes(&state.cats[cats[0]].recipe_type, std::slice::from_ref(&focus), false, &|_| true);
     state.view = Some(View { cats, cat: 0, page: 0, recipes, focus });
 }
 
@@ -203,7 +255,7 @@ fn select_category(state: &mut State, cat: usize) {
     let Some(v) = state.view.as_mut() else { return };
     v.cat = cat;
     v.page = 0;
-    v.recipes = state.mgr.recipes(v.cats[cat].recipe_type(), std::slice::from_ref(&v.focus), false, &|_| true);
+    v.recipes = state.mgr.recipes(&state.cats[v.cats[cat]].recipe_type, std::slice::from_ref(&v.focus), false, &|_| true);
 }
 
 fn text_w(game: &Game<'_>, t: &str) -> i32 {
@@ -222,7 +274,7 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
         let bounds = grid::calculate_bounds(&GridConfig::ingredient_list(), area, false);
         let search = Rect::new(bounds.x.max(left), bh - SEARCH_H - MARGIN, bounds.w.max(80), SEARCH_H);
         let nav = Rect::new(bounds.x, 2, bounds.w, 16);
-        s.places = Places { grid: bounds, nav, search, panel: Rect::EMPTY };
+        s.places = Places { grid: bounds, nav, search, panel: Rect::EMPTY, marks: Rect::EMPTY };
         if bounds.is_empty() {
             return;
         }
@@ -241,6 +293,22 @@ pub(super) fn container_draw(game: &Game<'_>, window: [f32; 4], batch: &mut HudB
                 game.native_fill(batch, rect_f(Rect::new(a.x + 1, a.y + 1, 16, 16)), HOVER);
             }
             s.hot.push((a, item.id.clone()));
+        }
+        // The bookmark list, left of the window.
+        let marks_area = Rect::new(MARGIN, NAV_H, window[0] as i32 - 2 * MARGIN, bh - NAV_H - 2 * MARGIN);
+        let marks = grid::calculate_bounds(&GridConfig::bookmark_list(), marks_area, false);
+        s.places.marks = marks;
+        if !marks.is_empty() {
+            let mark_slots = grid::calculate_slots(marks, &[], None, 0);
+            for (slot, id) in mark_slots.iter().zip(s.bookmarks.items().to_vec()) {
+                let a = slot.area;
+                game.native_fill(batch, rect_f(Rect::new(a.x + 1, a.y + 1, 16, 16)), 0x40FFFF00);
+                game.native_item(batch, &id, [(a.x + 1) as f32, (a.y + 1) as f32], 16.0);
+                if a.contains(cx, cy) {
+                    game.native_fill(batch, rect_f(Rect::new(a.x + 1, a.y + 1, 16, 16)), HOVER);
+                }
+                s.hot.push((a, id));
+            }
         }
         // Navigation: `<  page/pages  >`.
         let pages = grid::page_count(s.results.len() as i32, per_page);
@@ -295,13 +363,21 @@ fn stacks(s: &State, r: &[super::native_hooks::NativeRecipeStack]) -> Vec<String
 fn draw_view(game: &Game<'_>, batch: &mut HudBatch, s: &mut State, cx: i32, cy: i32) {
     let Some(v) = s.view.as_ref() else { return };
     let Some(data) = s.data.clone() else { return };
-    let kind = v.cats[v.cat];
+    let cat = s.cats[v.cats[v.cat]].clone();
     let (bw, bh) = (batch.width as i32, batch.height as i32);
     let pages = v.recipes.len().max(1);
-    let recipe = v.recipes.get(v.page).and_then(|id| s.recipe_of.get(*id as usize)).and_then(|n| data.recipes.get(*n));
-    let (gw, gh) = recipe.map_or((3, 3), |r| (r.width as i32, r.height as i32));
-    let inputs = recipe.map_or(0, |r| r.slots.len());
-    let lay = view::layout(kind, (gw, gh), inputs);
+    let src = v.recipes.get(v.page).and_then(|id| s.recipe_of.get(*id as usize)).copied();
+    let native = match src {
+        Some(Src::Native(n)) => data.recipes.get(n),
+        _ => None,
+    };
+    let custom = match src {
+        Some(Src::Custom(n)) => PLUGINS.with_borrow(|p| p.recipes.get(n).cloned()),
+        _ => None,
+    };
+    let (gw, gh) = native.map_or((3, 3), |r| (r.width as i32, r.height as i32));
+    let inputs = native.map_or(0, |r| r.slots.len());
+    let lay = cat.layout_for((gw, gh), inputs);
     let pw = (lay.width + 24).max(176);
     let ph = lay.height + 78;
     let panel = Rect::new((bw - pw) / 2, (bh - ph) / 2, pw, ph);
@@ -309,53 +385,64 @@ fn draw_view(game: &Game<'_>, batch: &mut HudBatch, s: &mut State, cx: i32, cy: 
     game.native_fill(batch, rect_f(panel), BG);
     game.native_fill(batch, rect_f(Rect::new(panel.x + 1, panel.y + 1, panel.w - 2, panel.h - 2)), 0xFFC6C6C6);
     // Category tabs along the top, the title under them.
-    for (i, k) in v.cats.iter().enumerate() {
+    for (i, ci) in v.cats.iter().enumerate() {
         let t = Rect::new(panel.x + 4 + i as i32 * 22, panel.y + 4, 20, 20);
         game.native_fill(batch, rect_f(t), if i == v.cat { 0xFFFFFFFF } else { 0xFF8B8B8B });
-        game.native_item(batch, k.icon(), [(t.x + 2) as f32, (t.y + 2) as f32], 16.0);
+        game.native_item(batch, &s.cats[*ci].icon, [(t.x + 2) as f32, (t.y + 2) as f32], 16.0);
     }
-    game.native_text(batch, kind.title_en(), [(panel.x + 6) as f32, (panel.y + 28) as f32], 0x404040, false);
+    game.native_text(batch, &cat.title, [(panel.x + 6) as f32, (panel.y + 28) as f32], 0x404040, false);
     let origin = (panel.x + (pw - lay.width) / 2, panel.y + 42);
     let mut hot = Vec::new();
-    if let Some(r) = recipe {
+    s.transfer = None;
+    if src.is_some() {
         if let Some((ax, ay)) = lay.arrow {
             game.native_text(batch, "->", [(origin.0 + ax) as f32, (origin.1 + ay + 4) as f32], 0x404040, false);
         }
-        let result_list = stacks(s, &r.results);
+        let result_list = native.map(|r| stacks(s, &r.results)).unwrap_or_default();
         for slot in &lay.slots {
             let rect = Rect::new(origin.0 + slot.x, origin.1 + slot.y, 18, 18);
             game.native_fill(batch, rect_f(rect), SLOT_BG);
-            let list: Vec<String> = match slot.role {
-                SlotRole::Input => {
+            let list: Vec<String> = match (slot.role, native, custom.as_ref()) {
+                (SlotRole::Input, Some(r), _) => {
                     // Brewing: the bottle fills three slots, the reagent the fourth.
-                    let src = if kind == Kind::Brewing { if slot.input < 3 { 0 } else { 1 } } else { slot.input };
-                    r.slots.get(src).map(|x| stacks(s, x)).unwrap_or_default()
+                    let at = if cat.vanilla == Some(Kind::Brewing) { usize::from(slot.input >= 3) } else { slot.input };
+                    r.slots.get(at).map(|x| stacks(s, x)).unwrap_or_default()
                 }
-                SlotRole::Output => result_list.clone(),
-                SlotRole::Fuel => vec!["minecraft:coal".to_owned()],
+                (SlotRole::Input, None, Some(c)) => c.inputs.get(slot.input).cloned().unwrap_or_default(),
+                (SlotRole::Output, Some(_), _) => result_list.clone(),
+                (SlotRole::Output, None, Some(c)) => c.outputs.get(slot.input).cloned().unwrap_or_default(),
+                (SlotRole::Fuel, _, _) => vec!["minecraft:coal".to_owned()],
+                _ => vec![],
             };
             if let Some(id) = cycle(s, &list) {
                 game.native_item(batch, &id, [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
                 if rect.contains(cx, cy) {
                     game.native_fill(batch, rect_f(Rect::new(rect.x + 1, rect.y + 1, 16, 16)), HOVER);
                 }
-                hot.push((rect, id, slot.role));
+                hot.push((rect, id));
             }
+        }
+        // Recipe transfer (`+`): the recipe book places crafting recipes in the open grid.
+        if let Some(r) = native.filter(|r| r.book_id >= 0 && cat.vanilla == Some(Kind::Crafting)) {
+            let b = Rect::new(origin.0 + lay.width - 13, origin.1 + lay.height - 13, 13, 13);
+            game.native_fill(batch, rect_f(b), if b.contains(cx, cy) { 0xFF55FF55 } else { 0xFF339933 });
+            game.native_text(batch, "+", [(b.x + 4) as f32, (b.y + 3) as f32], TEXT, true);
+            s.transfer = Some((b, r.book_id));
         }
     }
     let label = format!("{}/{}", v.page + 1, pages);
     game.native_text(batch, "<", [(panel.x + 8) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
     game.native_text(batch, ">", [(panel.x + pw - 14) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
     game.native_text(batch, &label, [(panel.x + (pw - text_w(game, &label)) / 2) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
-    if let Some((_, id, _)) = hot.iter().find(|(r, _, _)| r.contains(cx, cy)) {
+    if let Some((_, id)) = hot.iter().find(|(r, _)| r.contains(cx, cy)) {
         let id = id.clone();
         tooltip(game, batch, s, &id, cx, cy);
     }
-    s.hot = hot.into_iter().map(|(r, id, _)| (r, id)).collect();
+    s.hot = hot;
 }
 
 pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2], button: u8, claimed: &mut bool) {
-    let _ = (game, window);
+    let _ = window;
     let (x, y) = (at[0] as i32, at[1] as i32);
     STATE.with_borrow_mut(|s| {
         if s.data.is_none() {
@@ -370,6 +457,12 @@ pub(super) fn container_click(game: &mut Game<'_>, window: [f32; 4], at: [f32; 2
                 return;
             }
             *claimed = true;
+            if let Some((b, book_id)) = s.transfer && b.contains(x, y) {
+                // Left places the recipe once, right as many as the items allow (JEI: Shift).
+                let _ = game.native_place_recipe(book_id, right);
+                s.view = None;
+                return;
+            }
             // Tabs.
             let cats = s.view.as_ref().map_or(0, |v| v.cats.len());
             for i in 0..cats {
@@ -455,6 +548,17 @@ pub(super) fn container_key(game: &mut Game<'_>, key: &str, text: Option<&str>, 
             return;
         }
         if !pressed {
+            return;
+        }
+        if key == "key.keyboard.a" {
+            // `jei.key.bookmark` (A): bookmark the stack under the cursor, or remove it.
+            let cursor = game.native_cursor();
+            let (cx, cy) = (cursor[0] as i32, cursor[1] as i32);
+            let over = s.hot.iter().find(|(r, _)| r.contains(cx, cy)).map(|(_, id)| id.clone());
+            if let Some(id) = over.or(hovered) {
+                s.bookmarks.toggle(&id);
+                *claimed = true;
+            }
             return;
         }
         // `jei.key.showRecipe` (R) and `jei.key.showUses` (U) on the stack under the cursor.
