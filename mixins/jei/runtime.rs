@@ -7,7 +7,8 @@ use super::Game;
 use horizon_client::hud::HudBatch;
 use jei_core::bookmarks::BookmarkList;
 use jei_core::grid::{self, GridConfig, Rect};
-use jei_core::plugin::{CategoryDef, CustomRecipe, PluginError, Registry};
+use jei_core::plugin::{split_ingredient, CategoryDef, CustomRecipe, PluginError, Registry};
+use jei_core::view::{input as slot_input, output as slot_output, Layout};
 use jei_core::ingredient::{FilterConfig, IngredientData, ListElementInfo};
 use jei_core::prefix::{default_mode, SearchIndex, SearchMode, PREFIXES};
 use jei_core::recipes::{Focus, RecipeId, RecipeManager, Role, Slot};
@@ -93,6 +94,7 @@ struct State {
     rows: i32,
     /// An item pressed in the list and not yet released: (item, right button).
     drag: Option<(String, bool)>,
+    anvil_done: bool,
     dirty: bool,
     screen: (i32, i32),
     options_button: Rect,
@@ -129,6 +131,7 @@ impl State {
             columns: 9,
             rows: 16,
             drag: None,
+            anvil_done: false,
             dirty: false,
             screen: (0, 0),
             options_button: Rect::EMPTY,
@@ -143,6 +146,27 @@ impl State {
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::new());
     static PLUGINS: RefCell<Registry> = RefCell::new(Registry::default());
+}
+
+/// `AnvilRecipeCategory`: left slot, right slot and output; the level cost under it.
+const ANVIL: &str = "jei:anvil";
+
+fn register_anvil(data: &NativeRecipes, anvil: &[super::native_hooks::NativeAnvilRecipe]) {
+    let layout = Layout { width: 125, height: 38, slots: vec![slot_input(0, 1, 1), slot_input(1, 50, 1), slot_output(108, 1)], arrow: Some((76, 5)) };
+    let _ = register_category(CategoryDef::custom(ANVIL, "Anvil", "minecraft:anvil", layout));
+    let name = |s: &super::native_hooks::NativeRecipeStack| -> Option<String> {
+        let id = &data.items.get(s.item as usize)?.id;
+        Some(if s.components.is_empty() { id.clone() } else { format!("{id}\u{1}{}", s.components) })
+    };
+    for r in anvil {
+        let left: Vec<String> = r.left.iter().filter_map(name).collect();
+        let right: Vec<String> = r.right.iter().filter_map(name).collect();
+        let outs: Vec<String> = r.results.iter().filter_map(name).collect();
+        let notes: Vec<String> = r.costs.iter().map(|c| format!("Enchantment Cost: {c}")).collect();
+        // The left slot repeats for each step, so the three lists cycle together.
+        let left = if left.len() == 1 { vec![left[0].clone(); right.len()] } else { left };
+        let _ = add_recipe(CustomRecipe { recipe_type: ANVIL.to_owned(), inputs: vec![left, right], outputs: vec![outs], notes });
+    }
 }
 
 /// `IRecipeCategoryRegistration`: another mod's recipe category (call from its own glue, at start).
@@ -266,8 +290,13 @@ fn load(state: &mut State, data: Arc<NativeRecipes>) {
         }
     }
     for (n, r) in plugins.recipes.iter().enumerate() {
-        let mut slots: Vec<Slot> = r.inputs.iter().map(|i| Slot { role: Role::Input, ingredients: i.clone() }).collect();
-        slots.extend(r.outputs.iter().map(|o| Slot { role: Role::Output, ingredients: o.clone() }));
+        let plain = |l: &Vec<String>| -> Vec<String> {
+            let mut v: Vec<String> = l.iter().map(|s| split_ingredient(s).0.to_owned()).collect();
+            v.dedup();
+            v
+        };
+        let mut slots: Vec<Slot> = r.inputs.iter().map(|i| Slot { role: Role::Input, ingredients: plain(i) }).collect();
+        slots.extend(r.outputs.iter().map(|o| Slot { role: Role::Output, ingredients: plain(o) }));
         if let Some(id) = mgr.add_recipe(&r.recipe_type, slots) {
             if recipe_of.len() <= id as usize {
                 recipe_of.resize(id as usize + 1, Src::Native(0));
@@ -311,6 +340,12 @@ pub(super) fn tick(game: &mut Game<'_>) {
             s.settings_loaded = true;
         });
     }
+    if STATE.with_borrow(|s| !s.anvil_done) {
+        if let (Some(data), Some(anvil)) = (game.native_recipes(), game.native_anvil_recipes()) {
+            register_anvil(&data, &anvil);
+            STATE.with_borrow_mut(|s| s.anvil_done = true);
+        }
+    }
     let version = PLUGINS.with_borrow(|p| p.version);
     let needs = STATE.with_borrow(|s| s.data.is_none() || s.plugin_version != version || s.dirty);
     if needs && let Some(d) = game.native_recipes() {
@@ -318,11 +353,25 @@ pub(super) fn tick(game: &mut Game<'_>) {
     }
 }
 
+/// Draws an ingredient string (`id` or `id\u{1}components`) in a 16 px square at `at`.
+fn draw_ing(game: &Game<'_>, batch: &mut HudBatch, ing: &str, at: [f32; 2]) {
+    let (id, comps) = split_ingredient(ing);
+    if let Some(c) = comps.filter(|c| !c.is_empty()) {
+        let stack = super::native_hooks::NativeStack { item: id.to_owned(), count: 1, components: c.to_owned() };
+        if let Some(st) = super::native_panel::browser_stack(game.res.items(), &stack) {
+            game.native_item_stack(batch, &st, at, 16.0);
+            return;
+        }
+    }
+    game.native_item(batch, id, at, 16.0);
+}
+
 fn rect_f(r: Rect) -> [f32; 4] {
     [r.x as f32, r.y as f32, r.w as f32, r.h as f32]
 }
 
 fn open_recipes(state: &mut State, item: &str, role: Role) {
+    let item = split_ingredient(item).0;
     let focus = Focus { role, uid: item.to_owned() };
     let cats: Vec<usize> = state
         .mgr
@@ -552,7 +601,7 @@ fn draw_view(game: &Game<'_>, batch: &mut HudBatch, s: &mut State, cx: i32, cy: 
                 _ => vec![],
             };
             if let Some(id) = cycle(s, &list) {
-                game.native_item(batch, &id, [(rect.x + 1) as f32, (rect.y + 1) as f32], 16.0);
+                draw_ing(game, batch, &id, [(rect.x + 1) as f32, (rect.y + 1) as f32]);
                 if rect.contains(cx, cy) {
                     game.native_fill(batch, rect_f(Rect::new(rect.x + 1, rect.y + 1, 16, 16)), HOVER);
                 }
@@ -571,8 +620,13 @@ fn draw_view(game: &Game<'_>, batch: &mut HudBatch, s: &mut State, cx: i32, cy: 
     game.native_text(batch, "<", [(panel.x + 8) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
     game.native_text(batch, ">", [(panel.x + pw - 14) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
     game.native_text(batch, &label, [(panel.x + (pw - text_w(game, &label)) / 2) as f32, (panel.y + ph - 14) as f32], 0x404040, false);
+    if let Some(c) = custom.as_ref().filter(|c| !c.notes.is_empty()) {
+        let step = (s.started.elapsed().as_millis() / CYCLE_MS) as usize % c.notes.len();
+        let note = &c.notes[step];
+        game.native_text(batch, note, [(origin.0 + (lay.width - text_w(game, note)) / 2) as f32, (origin.1 + lay.height + 4) as f32], 0x404040, false);
+    }
     if let Some((_, id)) = hot.iter().find(|(r, _)| r.contains(cx, cy)) {
-        let id = id.clone();
+        let id = split_ingredient(id).0.to_owned();
         tooltip(game, batch, &id, cx, cy);
     }
     s.hot = hot;

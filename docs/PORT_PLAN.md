@@ -23,3 +23,33 @@ Horizon changes stay generic (never JEI-specific) and go to SCPLEGION/horizon as
 Faithfulness rules: port behaviour, strings (lang keys) and layout numbers exactly; no simplifications that diverge.
 Search storage uses plain in-memory substring indexes instead of Lucene (same results: literal, case-sensitive substring
 on JEI's already lowercased keys).
+
+## Status (updated after the first working version)
+
+Done: J0 scaffold, J1 search, J2 ingredient strings, J3 recipe manager, H1 container overlay hooks (Horizon API 87),
+game tooltip (88), release hook for ghost drag (89), anvil recipe data (90), ingredient grid layout, vanilla category layouts
+(crafting, furnace types, campfire, stonecutting, smithing, brewing, anvil), recipe view with tabs/paging/history,
+R/U/A/Backspace keys, bookmarks (saved), cheat mode, options (search modes, grid size), recipe transfer (+), plugin
+registry for other mods, ghost-ingredient drag into mod screens.
+
+Not tested in game yet (no Minecraft resources in the build container).
+
+## Audit against the Java source: gaps still open
+
+1. **Ingredient variants.** The list shows one entry per item id. JEI lists every creative-tab stack (potions, tipped arrows,
+   enchanted books, firework variants...) and distinguishes them by subtype. Needs a Horizon helper that gives the creative
+   tabs' stacks (components included); `IngredientManager`, `UidContext` and subtype interpreters are then ported.
+2. **Fuel category** (`FuelRecipeMaker`, `AbstractFuelCategory`) and **compostable category** (`CompostingRecipeMaker`):
+   burn times and compost chances come from item components (`cooking_fuel`, `compostable`); needs a Horizon data helper.
+3. **Smithing** trim/transform extensions and **brewing** potion recipes use components; the native recipe data carries them
+   only for stock recipes.
+4. **Info category** (`IngredientInfoRecipe`, used by other mods' plugins): add a generic text category to the plugin registry.
+5. **Hide ingredients / edit mode** (`IngredientBlacklistInternal`, `jei-blacklist`) and the **config file** (`jei-client.toml`
+   with the full option set). The options screen covers search modes and grid size only.
+6. **Search completion overlay**, **syntax highlighting** and **history list** (the bottom history of recently opened
+   ingredients; recipe-view history is done).
+7. **Recipe view fidelity**: JEI's background sprites, animated arrow/flame/bubbles, slot backgrounds, focus highlight of the
+   focused ingredient, recipe category sorting config, "recipe bookmarks", catalysts column.
+8. **Mod names / aliases**: real mod display names (now derived from the namespace) and `modAliases`.
+9. **Language**: category titles are English; read the game's language.
+10. **Mekanism plugin**: Mekanism-rust is paused; its recipe categories would call `jei::register_category` / `add_recipe`.

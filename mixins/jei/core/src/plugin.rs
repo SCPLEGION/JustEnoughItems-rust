@@ -46,6 +46,16 @@ pub struct CustomRecipe {
     pub recipe_type: String,
     pub inputs: Vec<Vec<String>>,
     pub outputs: Vec<Vec<String>>,
+    /// A line of text under the layout for each step of the slots' cycle (the anvil's level cost); may be empty.
+    pub notes: Vec<String>,
+}
+
+/// An ingredient string is an item id, optionally followed by `\u{1}` and its components (`[minecraft:damage=5]`).
+pub fn split_ingredient(s: &str) -> (&str, Option<&str>) {
+    match s.split_once('\u{1}') {
+        Some((id, comps)) => (id, Some(comps)),
+        None => (s, None),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,7 +121,7 @@ mod tests {
         let mut r = Registry::default();
         r.register_category(crusher()).unwrap();
         assert_eq!(r.register_category(crusher()), Err(PluginError::DuplicateCategory("mekanism:crusher".into())));
-        let ok = CustomRecipe { recipe_type: "mekanism:crusher".into(), inputs: vec![vec!["minecraft:cobblestone".into()]], outputs: vec![vec!["minecraft:gravel".into()]] };
+        let ok = CustomRecipe { recipe_type: "mekanism:crusher".into(), inputs: vec![vec!["minecraft:cobblestone".into()]], outputs: vec![vec!["minecraft:gravel".into()]], notes: vec![] };
         r.add_recipe(ok.clone()).unwrap();
         let too_many = CustomRecipe { inputs: vec![vec![], vec![]], ..ok.clone() };
         assert!(matches!(r.add_recipe(too_many), Err(PluginError::TooManySlots(_))));
@@ -119,6 +129,12 @@ mod tests {
         assert!(matches!(r.add_recipe(other), Err(PluginError::UnknownCategory(_))));
         r.add_catalyst("mekanism:crusher", "mekanism:advanced_crusher").unwrap();
         assert_eq!(r.categories[0].stations.len(), 2);
+    }
+
+    #[test]
+    fn splits_ingredient_components() {
+        assert_eq!(split_ingredient("minecraft:stick"), ("minecraft:stick", None));
+        assert_eq!(split_ingredient("minecraft:bow\u{1}[minecraft:damage=5]"), ("minecraft:bow", Some("[minecraft:damage=5]")));
     }
 
     #[test]
