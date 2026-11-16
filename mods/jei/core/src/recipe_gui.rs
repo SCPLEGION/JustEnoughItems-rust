@@ -172,6 +172,62 @@ pub fn total_width(category_w: i32, category_h: i32, border: i32, buttons: i32) 
     border + right
 }
 
+const STATION_SLOT: i32 = 16;
+const STATION_SLOT_BORDER: i32 = 1;
+const STATION_BORDER: i32 = 5;
+const SIDE_OVERLAP: i32 = 6;
+const OPTION_BUTTON: i32 = 16;
+
+/// `CraftingStations.calculateLayout`: the tab of catalysts left of the panel, overlapping it by 6.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stations {
+    pub tab: Rect,
+    /// The slots (`16` square each), in the order of the stations.
+    pub slots: Vec<Rect>,
+    /// The slot backgrounds' rectangle (the tab less its border).
+    pub inner: Rect,
+}
+
+pub fn stations(count: usize, recipe_area: Rect, option_buttons: Rect) -> Option<Stations> {
+    if count == 0 {
+        return None;
+    }
+    let available_height = recipe_area.h - option_buttons.h - 8;
+    let border_height = 2 * STATION_BORDER + 2 * STATION_SLOT_BORDER;
+    let mut per_column = ((available_height - border_height) / STATION_SLOT).max(1);
+    let columns = (count as i32 + per_column - 1) / per_column;
+    per_column = (count as i32 + columns - 1) / columns;
+    let width = 2 * STATION_SLOT_BORDER + 2 * STATION_BORDER + columns * STATION_SLOT;
+    let height = 2 * STATION_SLOT_BORDER + 2 * STATION_BORDER + per_column * STATION_SLOT;
+    let tab = Rect::new(recipe_area.x - width + SIDE_OVERLAP, recipe_area.y, width, height);
+    let slots = (0..count as i32)
+        .map(|i| {
+            let (column, row) = (i / per_column, i % per_column);
+            Rect::new(tab.x + STATION_BORDER + column * STATION_SLOT + STATION_SLOT_BORDER, tab.y + STATION_BORDER + row * STATION_SLOT + STATION_SLOT_BORDER, STATION_SLOT, STATION_SLOT)
+        })
+        .collect();
+    let inner = Rect::new(tab.x + STATION_BORDER, tab.y + STATION_BORDER, width - 2 * STATION_BORDER, height - 2 * STATION_BORDER);
+    Some(Stations { tab, slots, inner })
+}
+
+/// `RecipeOptionButtons.updateLayout`: the tab of `buttons` sort buttons at the panel's bottom left.
+pub fn option_buttons(recipe_area: Rect, buttons: usize) -> (Rect, Vec<Rect>) {
+    let width = 2 * STATION_SLOT_BORDER + 2 * STATION_BORDER + OPTION_BUTTON;
+    let height = 2 * STATION_SLOT_BORDER + 2 * STATION_BORDER + buttons as i32 * OPTION_BUTTON;
+    let y = recipe_area.y + recipe_area.h - height;
+    let x = recipe_area.x - width + SIDE_OVERLAP;
+    let rects = (0..buttons as i32)
+        .map(|i| Rect::new(x + STATION_BORDER + STATION_SLOT_BORDER, y + STATION_BORDER + i * OPTION_BUTTON + STATION_SLOT_BORDER, OPTION_BUTTON, OPTION_BUTTON))
+        .collect();
+    (Rect::new(x, y, width, height), rects)
+}
+
+/// `RecipesGui.getLeftSideExtraWidth`: how far the stations or the options reach left of the panel.
+pub fn left_extra_width(stations: Option<&Stations>, options: Rect) -> i32 {
+    let s = stations.map_or(0, |s| (s.tab.w - SIDE_OVERLAP).max(0));
+    s.max((options.w - SIDE_OVERLAP).max(0))
+}
+
 /// `RecipeGuiLogic.getPageString`.
 pub fn page_string(recipe_index: i32, per_page: i32, recipe_count: i32) -> String {
     let per = per_page.max(1);
@@ -243,6 +299,24 @@ mod tests {
         assert_eq!((b1.x, b1.y), (122, 45 - 15));
         assert_eq!(total_width(116, 54, 4, 1), 4 + 135);
         assert_eq!(total_width(116, 54, 4, 0), 4 + 120);
+    }
+
+    #[test]
+    fn stations_and_options() {
+        let area = Rect::new(328, 60, 198, 350);
+        let (opt, btns) = option_buttons(area, 2);
+        assert_eq!(opt, Rect::new(328 - 28 + 6, 60 + 350 - 44, 28, 44));
+        assert_eq!(btns[1].y, opt.y + 5 + 16 + 1);
+        let s = stations(3, area, opt).unwrap();
+        assert_eq!(s.tab.w, 28);
+        assert_eq!(s.tab.x, 328 - 28 + 6);
+        assert_eq!(s.slots.len(), 3);
+        assert_eq!(s.slots[1].y, s.slots[0].y + 16);
+        assert_eq!(left_extra_width(Some(&s), opt), 22);
+        assert!(stations(0, area, opt).is_none());
+        // Many stations wrap into columns.
+        let many = stations(40, area, opt).unwrap();
+        assert!(many.tab.w > 28);
     }
 
     #[test]

@@ -81,6 +81,7 @@ struct State {
     /// The recipes looked up, newest first (`LookupHistory`), saved when `lookups_dirty`.
     lookups: LookupHistory,
     lookups_dirty: bool,
+    config_dirty: bool,
     lookup_rects: Vec<(Rect, String)>,
     /// The search indexes as the completion reads them.
     views: Vec<PrefixView>,
@@ -379,6 +380,8 @@ enum Hit {
     TabsPrevious,
     TabsNext,
     Transfer(String),
+    /// An option button of the left tab: 0 bookmarks first, 1 craftable first.
+    SortOption(usize),
 }
 
 const NOTE_COLOR: u32 = 0xFF808080;
@@ -402,7 +405,11 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     let ui_at = |i: usize| v.recipes.get(i).and_then(|id| r.ui.get(*id as usize)).cloned();
     let (cx, cy) = (screen.mouse[0] as i32, screen.mouse[1] as i32);
 
-    let ideal = recipe_gui::ideal_area(bw, bh, recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, 0);
+    // The stations and option tabs reach left of the panel and narrow what the screen may take (`getLeftSideExtraWidth`).
+    let first_ideal = recipe_gui::ideal_area(bw, bh, recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, 0);
+    let (first_options, _) = recipe_gui::option_buttons(first_ideal, 2);
+    let extra = recipe_gui::left_extra_width(recipe_gui::stations(cat.stations.len(), first_ideal, first_options).as_ref(), first_options);
+    let ideal = recipe_gui::ideal_area(bw, bh, recipe_gui::MIN_GUI_WIDTH, recipe_gui::DEFAULT_GUI_HEIGHT, extra);
     let nav = recipe_gui::navigation(ideal);
     let first = ui_at(0);
     let layout_of = |u: Option<&recipes::UiRecipe>| cat.layout_for(u.map_or((3, 3), |u| u.grid), u.map_or(0, |u| u.inputs.len()));
@@ -424,6 +431,28 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     s.hits.clear();
 
     ui::gui_background(draw, area);
+    // `RecipeOptionButtons` and `CraftingStations`: the tabs left of the panel.
+    let (options_tab, option_rects) = recipe_gui::option_buttons(area, 2);
+    ui::side_tab(draw, options_tab, "recipe_options_tab_v2");
+    for (i, rect) in option_rects.iter().enumerate() {
+        let (icon, key) = if i == 0 { ("icons/bookmarks_first", "recipeSortingBookmarks") } else { ("icons/craftable_first", "recipeSortingCraftable") };
+        ui::icon_button(draw, *rect, icon, s.config.bool("recipes", key), rect.contains(cx, cy));
+        s.hits.push((*rect, Hit::SortOption(i)));
+    }
+    let mut station_hot = Vec::new();
+    if let Some(st) = recipe_gui::stations(cat.stations.len(), area, options_tab) {
+        ui::side_tab(draw, st.tab, "catalyst_tab_v2");
+        ui::side_tab(draw, st.inner, "recipe_catalyst_slot_background_v2");
+        for (rect, id) in st.slots.iter().zip(cat.stations.iter()) {
+            if let Some(&k) = s.index.get(id) {
+                draw.item(s.keys[k], [rect.x as f32, rect.y as f32], 16.0);
+            }
+            if rect.contains(cx, cy) {
+                draw.fill(rect_f(*rect), HOVER);
+            }
+            station_hot.push((*rect, id.clone()));
+        }
+    }
     // The tabs, over the panel's top edge.
     let selected = v.cat;
     if let Some(mut t) = recipe_gui::tabs(ideal, v.cats.len(), selected) {
@@ -522,6 +551,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
             s.hits.push((rect, Hit::Transfer(u.id.clone())));
         }
     }
+    hot.extend(station_hot);
     s.hot = hot;
     // `LookupHistory`: the recipes looked up lately, under the panel; a click opens that item's recipes.
     s.lookup_rects.clear();
@@ -553,6 +583,12 @@ fn view_click(s: &mut State, x: i32, y: i32, right: bool) -> bool {
                 s.history.clear();
             }
             Hit::Tab(i) => select_category(s, i),
+            Hit::SortOption(i) => {
+                let key = if i == 0 { "recipeSortingBookmarks" } else { "recipeSortingCraftable" };
+                let on = !s.config.bool("recipes", key);
+                s.config.set("recipes", key, if on { "true" } else { "false" });
+                s.config_dirty = true;
+            }
             Hit::PreviousCategory | Hit::NextCategory if cats > 0 => {
                 let next = if matches!(hit, Hit::NextCategory) { (cat + 1) % cats } else { (cat + cats - 1) % cats };
                 select_category(s, next);
@@ -741,7 +777,7 @@ impl Hooks for Mod {
             // The config button (`config_button.png`; the cheat icon, red, while cheating).
             let cfg = s.options_button;
             ui::button(draw, cfg, cfg.contains(cx, cy));
-            ui::cog(draw, cfg, if s.cheat { 0xFFFF5555 } else { 0xFFDDDDDD });
+            ui::cog(draw, cfg, s.cheat);
             if s.options {
                 draw_options(s, draw);
             }
@@ -850,6 +886,9 @@ impl Hooks for Mod {
     fn client_tick_post(&self, host: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
         let (give, transfer) = STATE.with_borrow_mut(|s| (s.give.take(), s.pending_transfer.take()));
         STATE.with_borrow_mut(|s| {
+            if std::mem::take(&mut s.config_dirty) {
+                host.set_setting("jei", "config", &s.config.serialize());
+            }
             if std::mem::take(&mut s.lookups_dirty) {
                 host.set_setting("jei", "lookups", &s.lookups.save());
             }
