@@ -333,20 +333,77 @@ fn load(host: &dyn ClientHost, s: &mut State) {
             }
         }
     }
-    // `IngredientSortStage.defaultStages`: mod name, then the creative menu's order (items outside it last, in registry order).
-    let mut entries: Vec<(String, usize, usize, ItemKey, String)> = entries
+    // `ingredientSortStages` (`IngredientSorterComparators`): each stage breaks the ties of the one before; registry order last.
+    // ARMOR needs the equippable component, which the host does not expose yet, so it keeps the order as it is.
+    let stages = s.config.list("ingredientList", "ingredientSortStages");
+    let mut tag_count: HashMap<String, usize> = HashMap::new();
+    let item_tags: HashMap<ItemKey, Vec<String>> = if stages.iter().any(|st| st == "TAG") {
+        let m: HashMap<ItemKey, Vec<String>> = entries.iter().filter_map(|id| host.item_key(id)).map(|k| (k, host.item_tags(k))).collect();
+        for t in m.values().flatten() {
+            *tag_count.entry(t.clone()).or_default() += 1;
+        }
+        m
+    } else {
+        HashMap::new()
+    };
+    // The most popular tag an item has (`getTagForSorting`), its path.
+    let top_tag = |key: ItemKey| -> String {
+        item_tags
+            .get(&key)
+            .and_then(|t| t.iter().max_by_key(|t| tag_count.get(*t).copied().unwrap_or(0)))
+            .map(|t| t.rsplit_once(':').map_or(t.as_str(), |p| p.1).to_owned())
+            .unwrap_or_default()
+    };
+    struct Entry {
+        mod_name: String,
+        creative: usize,
+        registry: usize,
+        key: ItemKey,
+        id: String,
+        name: String,
+        tag: String,
+        durability: u32,
+    }
+    let mut entries: Vec<Entry> = entries
         .into_iter()
         .enumerate()
         .filter_map(|(n, id)| {
             let key = host.item_key(&id)?;
             let id = id.to_string();
             let ns = id.split_once(':').map_or("minecraft", |p| p.0);
-            Some((mod_name(ns).to_lowercase(), creative_order.get(&key).copied().unwrap_or(usize::MAX), n, key, id))
+            let name = ItemStack::new(key, 1).map(|st| host.hover_name(&st)).unwrap_or_else(|| id.clone());
+            Some(Entry {
+                mod_name: mod_name(ns).to_lowercase(),
+                creative: creative_order.get(&key).copied().unwrap_or(usize::MAX),
+                registry: n,
+                key,
+                id,
+                name,
+                tag: top_tag(key),
+                durability: host.max_damage(key).unwrap_or(0),
+            })
         })
         .collect();
-    entries.sort_by(|a, b| (&a.0, a.1, a.2).cmp(&(&b.0, b.1, b.2)));
-    for (_, _, _, key, id) in entries {
-        let name = ItemStack::new(key, 1).map(|st| host.hover_name(&st)).unwrap_or_else(|| id.clone());
+    entries.sort_by(|a, b| {
+        for st in stages.iter() {
+            let o = match st.as_str() {
+                "MOD_NAME" => a.mod_name.cmp(&b.mod_name),
+                "ALPHABETICAL" => a.name.cmp(&b.name),
+                "CREATIVE_MENU" => a.creative.cmp(&b.creative),
+                // Tagged items first, then by the tag's path.
+                "TAG" => a.tag.is_empty().cmp(&b.tag.is_empty()).then_with(|| a.tag.cmp(&b.tag)),
+                // The larger max durability first.
+                "MAX_DURABILITY" => b.durability.cmp(&a.durability),
+                // INGREDIENT_TYPE: all of these are items; other types are listed after.
+                _ => std::cmp::Ordering::Equal,
+            };
+            if o.is_ne() {
+                return o;
+            }
+        }
+        a.registry.cmp(&b.registry)
+    });
+    for Entry { key, id, name, .. } in entries {
         let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
         let data = IngredientData {
             display_name: name,
