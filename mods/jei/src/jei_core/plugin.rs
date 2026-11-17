@@ -50,6 +50,14 @@ pub struct CustomRecipe {
     pub notes: Vec<String>,
 }
 
+/// An ingredient string may end in `\u{2}` and an amount (an item count, a fluid's or chemical's mB): the id and the amount.
+pub fn split_amount(s: &str) -> (&str, Option<u64>) {
+    match s.rsplit_once('\u{2}') {
+        Some((rest, n)) => n.parse().map_or((s, None), |n| (rest, Some(n))),
+        None => (s, None),
+    }
+}
+
 /// An ingredient string is an item id, optionally followed by `\u{1}` and its components (`[minecraft:damage=5]`).
 pub fn split_ingredient(s: &str) -> (&str, Option<&str>) {
     match s.split_once('\u{1}') {
@@ -144,6 +152,8 @@ mod tests {
     #[test]
     fn splits_ingredient_components() {
         assert_eq!(split_ingredient("minecraft:stick"), ("minecraft:stick", None));
+        assert_eq!(split_amount("fluid:minecraft:water\u{2}250"), ("fluid:minecraft:water", Some(250)));
+        assert_eq!(split_amount("minecraft:stick"), ("minecraft:stick", None));
         assert_eq!(split_ingredient("minecraft:bow\u{1}[minecraft:damage=5]"), ("minecraft:bow", Some("[minecraft:damage=5]")));
     }
 

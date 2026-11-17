@@ -99,6 +99,8 @@ struct State {
     inventory: std::collections::HashSet<String>,
     /// The ingredients of each recipe slot drawn last frame, for the tag tooltip.
     slot_lists: Vec<(Rect, Vec<String>)>,
+    /// The amount shown in a slot, and the tank capacity it is drawn against (0: none): for the tooltip.
+    slot_amounts: Vec<(Rect, u64, u64)>,
     lookups_dirty: bool,
     config_dirty: bool,
     bookmarks_dirty: bool,
@@ -671,6 +673,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     // The recipes of the page.
     let mut hot = Vec::new();
     let mut lists = Vec::new();
+    let mut amounts = Vec::new();
     for slot_index in 0..per {
         let idx = (first_recipe + slot_index) as usize;
         let Some(u) = ui_at(idx) else { break };
@@ -682,8 +685,13 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
             ui::recipe_arrow(draw, origin.0 + ax, origin.1 + ay);
         }
         for slot in &lay.slots {
-            let rect = Rect::new(origin.0 + slot.x, origin.1 + slot.y, 18, 18);
-            ui::slot(draw, rect);
+            let (sw, sh) = slot.size();
+            let rect = Rect::new(origin.0 + slot.x, origin.1 + slot.y, sw, sh);
+            if slot.tank.is_some() {
+                ui::tank_frame(draw, rect);
+            } else {
+                ui::slot(draw, rect);
+            }
             let list: Vec<String> = match slot.role {
                 SlotRole::Input => u.inputs.get(slot.input).cloned().unwrap_or_default(),
                 SlotRole::Output => u.outputs.clone(),
@@ -693,9 +701,49 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
                 lists.push((rect, list.clone()));
             }
             if let Some(id) = cycle(s, &list) {
-                draw_ing(s, draw, &id, [(rect.x + 1) as f32, (rect.y + 1) as f32]);
-                if rect.contains(cx, cy) {
-                    draw.fill([(rect.x + 1) as f32, (rect.y + 1) as f32, 16.0, 16.0], HOVER);
+                let amount = u.amounts.get(&id).copied();
+                if let Some((tw, th, cap)) = slot.tank {
+                    // `FluidTankRenderer`: the fluid fills the tank from the bottom up, in proportion to the capacity.
+                    let filled = match (amount, cap) {
+                        (Some(a), c) if c > 0 => ((th as u64 * a.min(c)) / c) as i32,
+                        _ => th,
+                    };
+                    if filled > 0
+                        && draw.push_clip([(rect.x + 1) as f32, (rect.y + 1 + th - filled) as f32, tw as f32, filled as f32]).is_ok()
+                    {
+                        let mut ty = rect.y + 1 + th - 16;
+                        while ty > rect.y + 1 + th - filled - 16 {
+                            let mut tx = rect.x + 1;
+                            while tx < rect.x + 1 + tw {
+                                draw_ing(s, draw, &id, [tx as f32, ty as f32]);
+                                tx += 16;
+                            }
+                            ty -= 16;
+                        }
+                        let _ = draw.pop_clip();
+                    }
+                    if rect.contains(cx, cy) {
+                        draw.fill([(rect.x + 1) as f32, (rect.y + 1) as f32, tw as f32, th as f32], HOVER);
+                    }
+                } else {
+                    draw_ing(s, draw, &id, [(rect.x + 1) as f32, (rect.y + 1) as f32]);
+                    // An item with a count shows it bottom right, as a stack does.
+                    if let (Some(n), Some(&k)) = (amount, s.index.get(&id))
+                        && n > 1
+                        && s.keys[k].is_some()
+                    {
+                        let t = n.to_string();
+                        let w = draw.text_width(&t) as i32;
+                        draw.text(&t, [(rect.x + 17 - w) as f32, (rect.y + 9) as f32], 0xFFFFFFFF, true);
+                    }
+                    if rect.contains(cx, cy) {
+                        draw.fill([(rect.x + 1) as f32, (rect.y + 1) as f32, 16.0, 16.0], HOVER);
+                    }
+                }
+                if let Some(n) = amount
+                    && s.index.get(&id).is_some_and(|&k| s.keys[k].is_none())
+                {
+                    amounts.push((rect, n, slot.tank.map_or(0, |t| t.2)));
                 }
                 hot.push((rect, id));
             }
@@ -725,6 +773,7 @@ fn draw_view(s: &mut State, draw: &mut dyn DrawContext, screen: &ScreenView<'_>)
     hot.extend(station_hot);
     s.hot = hot;
     s.slot_lists = lists;
+    s.slot_amounts = amounts;
     // `LookupHistory`: the recipes looked up lately, under the panel; a click opens that item's recipes.
     s.lookup_rects.clear();
     // Shown when `lookups.enabled`, in at most `maxRows` rows of `maxColumns` (and what fits under the panel).
@@ -1024,6 +1073,14 @@ impl Hooks for Mod {
                 let name = ing_name(s, host, id, k);
                 let ns = id.split_once(':').map_or("minecraft", |p| p.0);
                 let mut lines = vec![Text::literal(name)];
+                // A fluid or chemical's amount (`jei.tooltip.liquid.amount`, with the tank's capacity when it has one).
+                if let Some(&(_, n, cap)) = s.slot_amounts.iter().find(|(r, _, _)| r.contains(cx, cy)) {
+                    lines.push(Text::literal(if cap > 0 {
+                        recipes::fmt(&recipes::tr(host, "jei.tooltip.liquid.amount.with.capacity", "%s / %s mB"), &[n.to_string(), cap.to_string()])
+                    } else {
+                        recipes::fmt(&recipes::tr(host, "jei.tooltip.liquid.amount", "%s mB"), &[n.to_string()])
+                    }));
+                }
                 lines.extend(s.infos[k].data.tooltip.iter().map(|l| Text::literal(l.clone())));
                 if s.config.bool("tooltips", "showCreativeTabNamesEnabled") {
                     lines.extend(s.infos[k].data.creative_tabs.iter().map(|tab| Text::literal(tab.clone())));

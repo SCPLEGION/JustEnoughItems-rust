@@ -95,6 +95,21 @@ pub struct SlotPos {
     pub input: usize,
     pub x: i32,
     pub y: i32,
+    /// A tank gauge (`IDrawable` tank overlay) instead of an 18 square slot: width, height of the tank inside its frame
+    /// and the capacity the amount is drawn against (`addFluidSlot(capacity)`), in the ingredient's own unit (mB).
+    pub tank: Option<(i32, i32, u64)>,
+}
+
+impl SlotPos {
+    /// Makes this slot a tank gauge of `w` x `h` (inside its frame) holding up to `capacity`.
+    pub fn with_tank(mut self, w: i32, h: i32, capacity: u64) -> Self {
+        self.tank = Some((w, h, capacity));
+        self
+    }
+    /// The slot's frame: 18 square, or a tank's size plus its 1 pixel border.
+    pub fn size(&self) -> (i32, i32) {
+        self.tank.map_or((18, 18), |(w, h, _)| (w + 2, h + 2))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,13 +122,13 @@ pub struct Layout {
 }
 
 pub fn input(i: usize, x: i32, y: i32) -> SlotPos {
-    SlotPos { role: SlotRole::Input, input: i, x, y }
+    SlotPos { role: SlotRole::Input, input: i, x, y, tank: None }
 }
 pub fn output(x: i32, y: i32) -> SlotPos {
-    SlotPos { role: SlotRole::Output, input: 0, x, y }
+    SlotPos { role: SlotRole::Output, input: 0, x, y, tank: None }
 }
 fn fuel(x: i32, y: i32) -> SlotPos {
-    SlotPos { role: SlotRole::Fuel, input: usize::MAX, x, y }
+    SlotPos { role: SlotRole::Fuel, input: usize::MAX, x, y, tank: None }
 }
 
 /// The layout of a recipe. `grid` is a crafting recipe's `(width, height)`: shaped recipes keep their grid, shapeless

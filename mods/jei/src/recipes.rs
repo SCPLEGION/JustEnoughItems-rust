@@ -19,6 +19,8 @@ pub struct UiRecipe {
     pub grid: (i32, i32),
     pub inputs: Vec<Vec<String>>,
     pub outputs: Vec<String>,
+    /// The amount of an ingredient (a count, mB) by its id, where the plugin gave one.
+    pub amounts: HashMap<String, u64>,
 }
 
 const FUEL: &str = "jei:smelting_fuel";
@@ -27,7 +29,7 @@ const ANVIL: &str = "jei:anvil";
 const GRINDSTONE: &str = "jei:grindstone";
 
 /// The selected language's text for `key`, or `fallback` when no language layer has it.
-fn tr(host: &dyn ClientHost, key: &str, fallback: &str) -> String {
+pub(crate) fn tr(host: &dyn ClientHost, key: &str, fallback: &str) -> String {
     host.translate(key).unwrap_or_else(|| fallback.to_owned())
 }
 
@@ -158,16 +160,17 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
                             ((n.clamp(1, 3), (n + 2) / 3), inputs)
                         }
                     };
-                    UiRecipe { id: r.id.clone(), recipe_type: kind.recipe_type().into(), note: String::new(), grid, inputs, outputs: vec![out] }
+                    UiRecipe { amounts: Default::default(), id: r.id.clone(), recipe_type: kind.recipe_type().into(), note: String::new(), grid, inputs, outputs: vec![out] }
                 }
                 Kind::Stonecutting => match &r.rule {
                     Some(RecipeRule::Stonecutting { input, result }) => {
-                        UiRecipe { id: String::new(), recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(input)], outputs: id_of(names, result).into_iter().collect() }
+                        UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(input)], outputs: id_of(names, result).into_iter().collect() }
                     }
                     _ => continue,
                 },
                 Kind::Smithing => match &r.rule {
                     Some(RecipeRule::SmithingTransform { template, base, addition, result }) => UiRecipe {
+                        amounts: Default::default(),
                         id: String::new(), recipe_type: kind.recipe_type().into(),
                         note: String::new(),
                         grid: (3, 1),
@@ -175,6 +178,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
                         outputs: result.item.clone().into_iter().collect(),
                     },
                     Some(RecipeRule::SmithingTrim { template, base, addition, .. }) => UiRecipe {
+                        amounts: Default::default(),
                         id: String::new(), recipe_type: kind.recipe_type().into(),
                         note: String::new(),
                         grid: (3, 1),
@@ -185,7 +189,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
                 },
                 _ => {
                     let (Some(i), Some(out)) = (r.ingredients.first(), first_result) else { continue };
-                    UiRecipe { id: String::new(), recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(i)], outputs: vec![out] }
+                    UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: kind.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![ids(i)], outputs: vec![out] }
                 }
             };
             add(&mut mgr, u);
@@ -222,7 +226,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         } else {
             fmt(&tr(host, "gui.jei.category.fuel.smeltCount", "Smelts %s items"), &[trim_float(count)])
         };
-        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: FUEL.into(), note, grid: (1, 1), inputs: vec![items], outputs: vec![] });
+        add(&mut mgr, UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: FUEL.into(), note, grid: (1, 1), inputs: vec![items], outputs: vec![] });
     }
     register(
         &mut mgr,
@@ -233,7 +237,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
     compost.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     for (chance, id) in compost {
         let note = fmt(&tr(host, "gui.jei.category.compostable.chance", "Chance: %s%%"), &[((chance * 100.0).floor() as i32).to_string()]);
-        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
+        add(&mut mgr, UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: COMPOST.into(), note, grid: (1, 1), inputs: vec![vec![id]], outputs: vec![] });
     }
     // The anvil (`AnvilRecipeMaker`): each repairable item with its materials, each enchantable one with books.
     register(
@@ -248,7 +252,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
             continue;
         }
         let note = a.costs.iter().min().map(|c| fmt(&tr(host, "container.repair.cost", "Enchantment Cost: %1$d"), &[c.to_string()])).unwrap_or_default();
-        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: ANVIL.into(), note, grid: (1, 1), inputs: vec![left, right], outputs: out });
+        add(&mut mgr, UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: ANVIL.into(), note, grid: (1, 1), inputs: vec![left, right], outputs: out });
     }
     // Brewing (`BrewingRecipeMaker`): one recipe per ingredient item with the bottles it turns and what they become.
     // Potions share one item id, so the variants of a bottle are not told apart yet.
@@ -273,7 +277,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         }
     }
     for (ingredient, inputs, outputs) in brewing {
-        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: Kind::Brewing.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![inputs.clone(), inputs.clone(), inputs, vec![ingredient]], outputs });
+        add(&mut mgr, UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: Kind::Brewing.recipe_type().into(), note: String::new(), grid: (1, 1), inputs: vec![inputs.clone(), inputs.clone(), inputs, vec![ingredient]], outputs });
     }
     // The grindstone (`GrindstoneRecipeMaker`): repairs and disenchanting, with the experience range.
     register(
@@ -288,7 +292,7 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
             continue;
         }
         let note = if g.xp_max > 0 { fmt(&tr(host, "gui.jei.category.grindstone.experience", "%s to %s XP"), &[g.xp_min.to_string(), g.xp_max.to_string()]) } else { String::new() };
-        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: GRINDSTONE.into(), note, grid: (1, 1), inputs: vec![top, bottom], outputs: out });
+        add(&mut mgr, UiRecipe { amounts: Default::default(), id: String::new(), recipe_type: GRINDSTONE.into(), note, grid: (1, 1), inputs: vec![top, bottom], outputs: out });
     }
     // Categories and recipes other mods registered through `api` (`IModPlugin`).
     let plugins = crate::api::snapshot();
@@ -298,10 +302,16 @@ pub fn load(host: &dyn ClientHost, names: &HashMap<ItemKey, String>) -> Recipes 
         }
     }
     for r in plugins.recipes {
-        let id_of = |s: &String| crate::jei_core::plugin::split_ingredient(s).0.to_owned();
+        let id_of = |s: &String| crate::jei_core::plugin::split_ingredient(crate::jei_core::plugin::split_amount(s).0).0.to_owned();
+        let mut amounts = HashMap::new();
+        for s in r.inputs.iter().chain(r.outputs.iter()).flatten() {
+            if let (id, Some(n)) = crate::jei_core::plugin::split_amount(s) {
+                amounts.insert(crate::jei_core::plugin::split_ingredient(id).0.to_owned(), n);
+            }
+        }
         let inputs: Vec<Vec<String>> = r.inputs.iter().map(|slot| slot.iter().map(id_of).collect()).collect();
         let outputs: Vec<String> = r.outputs.first().map(|slot| slot.iter().map(id_of).collect()).unwrap_or_default();
-        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: r.recipe_type, note: r.notes.join(" "), grid: (1, 1), inputs, outputs });
+        add(&mut mgr, UiRecipe { id: String::new(), recipe_type: r.recipe_type, note: r.notes.join(" "), grid: (1, 1), inputs, outputs, amounts });
     }
     Recipes { mgr, cats, ui }
 }
