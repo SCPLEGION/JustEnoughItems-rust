@@ -37,6 +37,11 @@ fn slot_fill(draw: &mut dyn DrawContext, r: Rect) {
     fill(draw, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 0xFF8B8B8B);
 }
 
+/// The frame of a tank gauge: a slot's frame at any size.
+pub fn tank_frame(draw: &mut dyn DrawContext, r: Rect) {
+    slot_fill(draw, r);
+}
+
 /// `button_enabled_v2` (and its highlight when hovered): black frame, light top and left, dark bottom and right.
 fn button_fill(draw: &mut dyn DrawContext, r: Rect, hovered: bool) {
     fill(draw, r.x, r.y, r.w, r.h, 0xFF000000);
