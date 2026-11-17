@@ -101,6 +101,11 @@ struct State {
     slot_lists: Vec<(Rect, Vec<String>)>,
     /// The amount shown in a slot, and the tank capacity it is drawn against (0: none): for the tooltip.
     slot_amounts: Vec<(Rect, u64, u64)>,
+    /// The panel behind the ingredient list (the resize handles are its edges) and the room its grid may grow into.
+    ingredient_panel: Rect,
+    max_grid: [i32; 2],
+    /// A resize in progress (`IngredientGridResizer`).
+    resize: Option<Resize>,
     lookups_dirty: bool,
     config_dirty: bool,
     bookmarks_dirty: bool,
@@ -924,6 +929,29 @@ struct Drag {
     since: Instant,
 }
 
+/// `ResizeDrag`: the edges grabbed, where, and the grid's size and columns/rows at the start.
+#[derive(Clone, Debug)]
+struct Resize {
+    left: bool,
+    top: bool,
+    bottom: bool,
+    from: [f32; 2],
+    size: [i32; 2],
+    columns: i32,
+    rows: i32,
+    max: [i32; 2],
+}
+
+/// `ResizeHandle.at` on the panel, less the edge the panel is aligned to (right, the list sits on the right edge):
+/// `(left, top, bottom)`; the vertical alignment is centred, so both of those edges count.
+fn resize_handle(panel: Rect, x: i32, y: i32) -> (bool, bool, bool) {
+    const SIZE: i32 = 5;
+    if panel.w <= 0 || panel.h <= 0 || !panel.contains(x, y) {
+        return (false, false, false);
+    }
+    (x < panel.x + SIZE, y < panel.y + SIZE, y >= panel.y + panel.h - SIZE)
+}
+
 #[derive(Default)]
 struct Mod;
 
@@ -991,7 +1019,9 @@ impl Hooks for Mod {
             let area = overlay_layout::available_grid_area(gui_right, bw, bh);
             let bounds = grid::calculate_bounds(&GridConfig { max_columns: s.columns, max_rows: s.rows, ..GridConfig::ingredient_list() }, area, false);
             s.grid = bounds;
+            s.max_grid = [area.w, area.h];
             let areas = overlay_layout::areas(gui_right, bw, bh, bounds);
+            s.ingredient_panel = areas.background;
             s.nav = areas.navigation;
             s.search_box = areas.search;
             s.options_button = areas.config_button;
@@ -1223,6 +1253,24 @@ impl Hooks for Mod {
                 return;
             }
             unfocus(s);
+            // `guiResizeEnabled`: a press on the panel's edge starts a resize drag (left button).
+            if s.config.bool("input", "guiResizeEnabled") && event.button == 0 {
+                let (left, top, bottom) = resize_handle(s.ingredient_panel, x, y);
+                if left || top || bottom {
+                    s.resize = Some(Resize {
+                        left,
+                        top,
+                        bottom,
+                        from: event.screen.mouse,
+                        size: [s.grid.w, s.grid.h],
+                        columns: s.columns,
+                        rows: s.rows,
+                        max: s.max_grid,
+                    });
+                    claimed = true;
+                    return;
+                }
+            }
             let per = grid::calculate_slots(s.grid, &[], None, 0).len() as i32;
             if s.nav.contains(x, y) {
                 let pages = grid::page_count(s.results.len() as i32, per);
@@ -1244,7 +1292,49 @@ impl Hooks for Mod {
         if claimed { Flow::Cancel } else { Flow::Continue }
     }
 
+    fn screen_mouse_dragged_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenMouseDraggedPreEvent<'_>) -> Flow {
+        let mut claimed = false;
+        STATE.with_borrow_mut(|s| {
+            let Some(r) = s.resize.clone() else { return };
+            claimed = true;
+            if !s.config.bool("input", "guiResizeEnabled") {
+                return;
+            }
+            // `ResizeDrag.resize`: the size from the grab point; a centred axis grows both ways (twice the delta).
+            let dx = (event.screen.mouse[0] - r.from[0]) as f64 * if r.left { -1.0 } else { 1.0 };
+            let dy = (event.screen.mouse[1] - r.from[1]) as f64 * if r.top { -1.0 } else { 1.0 } * 2.0;
+            let mut cols = r.columns;
+            let mut rows = r.rows;
+            if r.left {
+                let w = ((r.size[0] as f64 + dx).round() as i32).clamp((4 * 18).min(r.max[0]), r.max[0].max(0));
+                cols = ((w as f32 / 18.0).round() as i32).clamp(4, 100);
+            }
+            if r.top || r.bottom {
+                let h = ((r.size[1] as f64 + dy).round() as i32).clamp(18.min(r.max[1]), r.max[1].max(0));
+                rows = ((h as f32 / 18.0).round() as i32).clamp(1, 100);
+            }
+            if r.left && cols == (r.size[0] as f32 / 18.0).round() as i32 {
+                cols = r.columns;
+            }
+            if (r.top || r.bottom) && rows == (r.size[1] as f32 / 18.0).round() as i32 {
+                rows = r.rows;
+            }
+            if (cols, rows) != (s.columns, s.rows) {
+                s.columns = cols;
+                s.rows = rows;
+                s.config.set("ingredientList", "maxColumns", &cols.to_string());
+                s.config.set("ingredientList", "maxRows", &rows.to_string());
+                s.config_dirty = true;
+            }
+        });
+        let _ = host;
+        if claimed { Flow::Cancel } else { Flow::Continue }
+    }
+
     fn screen_mouse_button_released_pre(&self, _: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonReleasedPreEvent<'_>) -> Flow {
+        if STATE.with_borrow_mut(|s| s.resize.take()).is_some() {
+            return Flow::Cancel;
+        }
         let Some(drag) = STATE.with_borrow_mut(|s| s.drag.take()) else { return Flow::Continue };
         let mouse = event.screen.mouse;
         STATE.with_borrow_mut(|s| {
@@ -1493,6 +1583,16 @@ impl Hooks for Mod {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resize_handles_are_the_panel_edges() {
+        let panel = Rect::new(100, 20, 80, 200);
+        assert_eq!(resize_handle(panel, 102, 100), (true, false, false));
+        assert_eq!(resize_handle(panel, 140, 22), (false, true, false));
+        assert_eq!(resize_handle(panel, 140, 218), (false, false, true));
+        assert_eq!(resize_handle(panel, 140, 100), (false, false, false));
+        assert_eq!(resize_handle(panel, 50, 100), (false, false, false));
+    }
+
     use super::*;
 
     #[test]

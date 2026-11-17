@@ -30,7 +30,7 @@ has been run in game yet; everything is type-checked against the fork's `horizon
 ## Open, from the audit against the Java source
 
 Config options in `OPTIONS` that nothing reads yet (wire each, then delete from this list):
-`toastReflowEnabled`, `compactInventoryEffects`, `bookmarkOutputAsRecipe`, `dragToRearrangeBookmarksEnabled`, `bookmarkTooltip*`, `guiResizeEnabled`,
+`toastReflowEnabled`, `compactInventoryEffects`, `bookmarkOutputAsRecipe`, `dragToRearrangeBookmarksEnabled`, `bookmarkTooltip*`, `guiResizeEnabled` (done: the ingredient list panel; the recipe screen has none yet),
 `dragDelayInMilliseconds`, `smoothScrolling*`, `showTagRecipesEnabled`,
 `enableRecipesGuiIngredientsSummary`, `tagContentTooltip*`, `lookupFluidContentsEnabled`,
 `lookupBlockTagsEnabled`, lookup history `displaySide`,
