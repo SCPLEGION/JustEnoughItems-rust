@@ -35,7 +35,7 @@ Config options in `OPTIONS` that nothing reads yet (wire each, then delete from 
 `enableRecipesGuiIngredientsSummary`, `tagContentTooltip*`, `lookupFluidContentsEnabled`,
 `lookupBlockTagsEnabled`, lookup history `displaySide`,
 `cheatToHotbarUsingHotkeysEnabled`, `recipeSyncWarningEnabled`.
-Options of `ClientConfig` missing from the table: `searchBarPosition`, `ingredientSortStages`, `bookmarkAddPosition`
+Options of `ClientConfig` missing from the table: `searchBarPosition`, `bookmarkAddPosition`
 (`recipeGuiHeight`/`recipeGuiWidth` and `showHiddenIngredients` are done.)
 
 Keybinds: the keyboard mappings of `InternalKeyMappings` are registered on Options > Controls (`jei-core::keys`) and
@@ -62,9 +62,10 @@ Screens and behaviour:
    tank sizes and the fluid tooltip content (`lookupFluidContentsEnabled`) are not ported.
 8. **Inventory integration**: shift to exclusion areas of the inventory effects, the recipe book and toasts
    (`toastReflowEnabled`, `compactInventoryEffects`), cheat give modes, `quickMove`.
-9. **Sort stages**: the default stages (mod name, creative menu) are applied; the `ingredientSortStages` option and the
-   other stages (type, alphabetical, tag, armor, durability) are not; `recipeSortingBookmarks`, `recipeSortingCraftable` (crafting only, one item per slot),
-   `giveMode` and the tag tooltip (`Accepts any: #tag`) are done.
+9. **Sort stages**: `ingredientSortStages` is read from `jei-client.toml` (mod name, alphabetical, creative menu, tag, max
+   durability); `ARMOR` needs the equippable component (not in the host API) and `INGREDIENT_TYPE` only separates items
+   from other types. The options screen cannot edit the list yet. `recipeSortingBookmarks`, `recipeSortingCraftable`, `giveMode`
+   and the tag tooltip (`Accepts any: #tag`) are done.
 10. **Language**: the lang files ship as mod assets and category titles, notes and costs read them (`host.translate`); the
     overlay's own strings (search hint, options, tooltips) are still English literals.
 11. **Real run**: needs the `mixins` pin from `cargo horizon-mod new` and a prebuilt game; then fix whatever the first
